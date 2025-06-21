@@ -1,0 +1,23 @@
+Flask==2.2.5
+matplotlib==3.7.2
+numpy==1.26.4
+open3d==0.18.0
+Pillow==10.3.0
+requests==2.31.0
+torch==2.1.1
+torchvision==0.16.1
+torchaudio==2.1.1
+transformers==4.39.3
+python-dotenv==1.0.0
+flask-cors==4.0.0
+cloudinary==1.37.0
+gunicorn==21.2.0
+huggingface_hub==0.20.2
+packaging==24.0
+plotly==5.18.0
+diffusers==0.27.0
+accelerate==0.27.0
+safetensors==0.4.2
+# xformers disabled for CPU-only operation
+filelock==3.13.1
+tqdm==4.66.2

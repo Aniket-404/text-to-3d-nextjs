@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-background: #121212;
+  --color-surface: #1E1E1E;
+  --color-primary: #00D1FF;
+  --color-accent: #FF007A;
+  --color-text-primary: #E0E0E0;
+  --color-text-secondary: #AAAAAA;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+@layer base {
+  body {
+    @apply antialiased;
+  }
+}
+
+@layer components {
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-text-gradient;
+  }
+
+  .card-gradient {
+    @apply bg-surface bg-card-gradient backdrop-blur-sm border border-surface/30;
+  }
+
+  .input-gradient {
+    @apply bg-input-gradient border border-surface/30 focus:border-primary/50 focus:shadow-glow;
+  }
+
+  .gradient-button {
+    @apply rounded-md bg-primary text-black hover:bg-primary/90 transition-all duration-300;
+  }
+  .shimmer {
+    @apply bg-gradient-to-r from-surface via-surface/50 to-surface bg-[length:200%_100%] animate-shimmer;
+  }
+
+  .toggle-button {
+    @apply px-3 py-1.5 text-sm rounded-md transition-all duration-200;
+  }
+
+  .toggle-button.active {
+    @apply bg-primary text-black shadow-sm shadow-primary/30;
+  }
+
+  .toggle-button:not(.active) {
+    @apply hover:bg-surface/80 text-text-secondary;
+  }
+
+  .image-preview-container {
+    @apply relative overflow-hidden rounded-lg;
+    box-shadow: 0 10px 30px -10px rgba(0, 209, 255, 0.15);
+    transition: transform 0.3s ease;
+  }
+
+  .image-preview-container:hover {
+    transform: scale(1.01);
+  }
+
+  .depth-preview {
+    @apply absolute bottom-3 right-3 w-24 h-24 rounded-md overflow-hidden border-2 border-white/30;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    transition: all 0.3s ease;
+  }
+
+  .depth-preview:hover {
+    @apply w-32 h-32;
+  }
+
+  .glass-panel {
+    @apply bg-surface/30 backdrop-blur-md border border-white/10 rounded-xl shadow-lg;
+  }
+}
+
+/* ModelViewer styles */
+.model-viewer-container {
+  @apply rounded-xl overflow-hidden bg-gradient-to-br from-black/80 to-surface/80;
+}
+
+/* Split layout for desktop */
+.split-layout {
+  @apply flex flex-col md:flex-row gap-8;
+}
+
+.split-layout > div {
+  @apply w-full md:w-1/2;
+}
+
+/* Loading spinner animation */
+.spinner {
+  @apply animate-spin;
+}
+
+/* Scroll styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-surface/50;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-primary/30 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-primary/50;
+}

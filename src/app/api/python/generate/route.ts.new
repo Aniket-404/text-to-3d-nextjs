@@ -1,0 +1,73 @@
+import { NextResponse } from 'next/server';
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const { prompt } = body;
+    
+    if (!prompt) {
+      return NextResponse.json(
+        { error: 'Prompt is required' }, 
+        { status: 400 }
+      );
+    }
+    
+    // Call the Python API
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+    console.log(`Calling Python API at: ${apiUrl}/generate`);
+    
+    // Create a timeout for the fetch request
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 seconds timeout
+    
+    try {
+      const response = await fetch(`${apiUrl}/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt }),
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId); // Clear the timeout if the request completes
+    
+      if (!response.ok) {
+        console.error('API Error Status:', response.status);
+        const errorText = await response.text();
+        let errorMessage = 'Failed to generate content';
+        
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+          // If the response isn't valid JSON, use the raw text
+          errorMessage = errorText || errorMessage;
+        }
+        
+        console.error('API Error Message:', errorMessage);
+        
+        return NextResponse.json(
+          { error: errorMessage }, 
+          { status: response.status }
+        );
+      }
+      
+      const data = await response.json();
+      return NextResponse.json(data);
+    } catch (fetchError: any) {
+      console.error('Fetch error:', fetchError);
+      // Handle timeout or other fetch errors
+      return NextResponse.json(
+        { error: fetchError.name === 'AbortError' ? 'Request timed out' : fetchError.message }, 
+        { status: 500 }
+      );
+    }
+  } catch (error: any) {
+    console.error('Error generating content:', error);
+    return NextResponse.json(
+      { error: error.message || 'Internal server error' }, 
+      { status: 500 }
+    );
+  }
+}

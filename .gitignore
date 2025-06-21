@@ -1,0 +1,62 @@
+# dependencies
+node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+python-api/.env
+
+# misc
+.DS_Store
+*.pem
+.vercel
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea
+
+# Temporary files
+*.tmp
+*.bak
+.*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.env/
+
+# Model cache and large files
+python-api/model_cache/
+python-api/models/
+python-api/temp/
+*.ckpt
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
