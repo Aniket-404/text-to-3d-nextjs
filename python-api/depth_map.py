@@ -249,7 +249,7 @@ def create_obj_file(point_cloud, colors):
         # Skip point cloud visualization for faster processing
         
         # Start with optimized quality settings
-        depth = 7  # Start with depth 7 which usually gives good results
+        depth = 8  # Start with depth 8 which usually gives good results
         points_percent = 1.0
         max_attempts = 2  # Reduce max attempts since we're starting with better params
         attempt = 0
