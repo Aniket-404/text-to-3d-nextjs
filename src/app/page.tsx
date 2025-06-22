@@ -6,7 +6,6 @@ import toast from 'react-hot-toast';
 import useAuth from '@/hooks/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import ModelViewer from '@/components/ModelViewer';
 
 export default function Home() {
   const [prompt, setPrompt] = useState('');
@@ -21,7 +20,6 @@ export default function Home() {
     depth_map_url: null
   });
   const [generationStep, setGenerationStep] = useState(0);
-  const [viewMode, setViewMode] = useState<'image' | '3d'>('image');
   const { user } = useAuth();
 
   const handleGenerate = async () => {
@@ -37,7 +35,6 @@ export default function Home() {
       model_url: null,
       depth_map_url: null
     });
-    setViewMode('image');
     
     const generatePromise = new Promise(async (resolve, reject) => {
       try {
@@ -228,147 +225,90 @@ export default function Home() {
               )}
             </div>
           </div>
-            {/* Right Panel - Output */}
+          {/* Right Panel - Output */}
           <div className="glass-panel p-6">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold">
-                {viewMode === 'image' ? 'Generated Image' : '3D Model Preview'}
-              </h2>              
-              {/* Toggle buttons for view mode */}
-              {(generatedUrls.image_url || generatedUrls.model_url) && (
-                <div className="flex bg-surface/30 rounded-md">
-                  <button 
-                    className={`toggle-button ${viewMode === 'image' ? 'active' : ''}`}
-                    onClick={() => setViewMode('image')}
-                  >
-                    Image
-                  </button>
-                  <button 
-                    className={`toggle-button ${viewMode === '3d' ? 'active' : ''}`}
-                    onClick={() => setViewMode('3d')}
-                  >
-                    3D Model
-                  </button>
-                </div>
-              )}
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold">Generated Results</h2>
             </div>
-            
-            <div className="aspect-square w-full rounded-lg overflow-hidden">              {/* Image Preview Mode */}
-              {viewMode === 'image' && generatedUrls.image_url ? (
-                <div className="image-preview-container w-full h-full">
-                  <img 
-                    src={generatedUrls.image_url} 
-                    alt={prompt || 'Generated image'} 
-                    className="w-full h-full object-cover rounded-lg"
-                  />
-                  
-                  {/* Optional: Show depth map in a small corner */}
-                  {generatedUrls.depth_map_url && (
-                    <div className="depth-preview">
-                      <img 
-                        src={generatedUrls.depth_map_url} 
-                        alt="Depth map" 
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                  )}
-                </div>              ) : viewMode === '3d' ? (
-                // In 3D mode, use ModelViewer with whatever URL we have
-                <ModelViewer modelUrl={generatedUrls.model_url || generatedUrls.image_url || ''} />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-black/40 rounded-lg">
-                  {isGenerating ? (
-                    <div className="text-center">
-                      <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
-                        <FaMagic className="text-3xl animate-spin text-primary" />
-                      </div>
-                      <p>Creating your {viewMode === 'image' ? 'image' : '3D model'}...</p>
-                    </div>
-                  ) : (
-                    <div className="text-center p-6">
-                      <p className="text-lg mb-2">Your {viewMode === 'image' ? 'image' : '3D model'} will appear here</p>
-                      <p className="text-sm text-text-secondary">
-                        Enter a prompt and click Generate to start
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            
-            {(generatedUrls.image_url || generatedUrls.model_url) && (
-              <div className="mt-4 space-y-4">
-                {viewMode === '3d' && generatedUrls.model_url && (
-                  <div className="flex justify-between text-sm text-text-secondary">
-                    <span>Format: OBJ</span>
-                    <span>~10,000 polygons</span>
-                  </div>
-                )}
-                
-                <div className="flex space-x-2">
-                  {viewMode === 'image' && generatedUrls.image_url ? (
-                    <>
-                      <a 
-                        href={generatedUrls.image_url} 
-                        download={`3dify-image-${Date.now()}.png`}
-                        className="flex-1 gradient-button py-2 text-sm flex items-center justify-center space-x-2"
-                        target="_blank"
-                        rel="noopener noreferrer"
+            <div className="grid grid-cols-2 gap-4">
+              {/* Image Preview */}
+              <div className="aspect-square rounded-lg overflow-hidden">
+                {generatedUrls.image_url ? (
+                  <div className="relative w-full h-full">
+                    <img 
+                      src={generatedUrls.image_url || undefined} 
+                      alt={prompt || 'Generated image'} 
+                      className="w-full h-full object-cover rounded-lg"
+                    />
+                    <div className="absolute bottom-2 left-2">
+                      <a
+                        href={generatedUrls.image_url || undefined}
+                        download
+                        className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
                       >
                         <FaDownload />
                         <span>Download Image</span>
-                      </a>                      <button 
-                        className="flex-1 bg-surface/50 hover:bg-surface py-2 text-sm rounded-md transition-colors flex items-center justify-center space-x-2"
-                        onClick={() => {
-                          setViewMode('3d');
-                          // Even without a model URL, we'll attempt to show a 3D representation
-                          if (!generatedUrls.model_url) {
-                            toast('Showing basic 3D representation of the image', {
-                              icon: 'ℹ️',
-                              duration: 3000
-                            });
-                          }
-                        }}
-                      >
-                        <FaMagic />
-                        <span>View 3D</span>
-                      </button>
-                    </>                  ) : viewMode === '3d' ? (
-                    <>
-                      {generatedUrls.model_url ? (
-                        <a 
-                          href={generatedUrls.model_url} 
-                          download={`3dify-model-${Date.now()}.obj`}
-                          className="flex-1 gradient-button py-2 text-sm flex items-center justify-center space-x-2"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <FaDownload />
-                          <span>Download Model</span>
-                        </a>
-                      ) : (
-                        <button
-                          className="flex-1 gradient-button py-2 text-sm flex items-center justify-center space-x-2 opacity-50"
-                          disabled
-                        >
-                          <FaDownload />
-                          <span>Model Unavailable</span>
-                        </button>
-                      )}
-                      <button 
-                        className="flex-1 bg-surface/50 hover:bg-surface py-2 text-sm rounded-md transition-colors flex items-center justify-center space-x-2"
-                        onClick={() => {
-                          setViewMode('image');
-                          toast.success('Switched to image view');
-                        }}
-                      >
-                        <FaDownload />
-                        <span>View Image</span>
-                      </button>
-                    </>
-                  ) : null}
-                </div>              </div>
-            )}
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-black/40 rounded-lg">
+                    {isGenerating ? (
+                      <div className="text-center">
+                        <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
+                          <FaMagic className="text-3xl animate-spin text-primary" />
+                        </div>
+                        <p>Creating your image...</p>
+                      </div>
+                    ) : (
+                      <div className="text-center p-6">
+                        <p className="text-lg mb-2">Your generated image will appear here</p>
+                        <p className="text-sm text-text-secondary">
+                          Enter a prompt and click Generate to start
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              {/* 3D Model Download */}
+              <div className="aspect-square rounded-lg overflow-hidden flex flex-col items-center justify-center bg-black/10">
+                {generatedUrls.model_url ? (
+                  <>
+                    <div className="text-center mb-4">
+                      <span className="block text-lg font-semibold mb-2">3D Model (OBJ)</span>
+                      <span className="text-sm text-text-secondary">Download the generated 3D model</span>
+                    </div>
+                    <a
+                      href={generatedUrls.model_url || undefined}
+                      download
+                      className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
+                    >
+                      <FaDownload />
+                      <span>Download 3D Model</span>
+                    </a>
+                  </>
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    {isGenerating ? (
+                      <div className="text-center">
+                        <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
+                          <FaMagic className="text-3xl animate-spin text-primary" />
+                        </div>
+                        <p>Creating 3D model...</p>
+                      </div>
+                    ) : (
+                      <div className="text-center p-6">
+                        <p className="text-lg mb-2">3D model will appear here</p>
+                        <p className="text-sm text-text-secondary">
+                          Enter a prompt and click Generate to start
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
