@@ -22,6 +22,7 @@ from transformers import DPTImageProcessor, DPTForDepthEstimation
 import torch
 import open3d as o3d
 import google.generativeai as genai
+import matplotlib.pyplot as plt
 
 # Load environment variables
 load_dotenv()
@@ -47,13 +48,49 @@ except Exception as e:
     raise
 
 def download_image(image_url):
-    """Download an image from a URL"""
+    """Download an image from a URL (optimized for Cloudinary URLs)"""
     logger.info(f"Downloading image from {image_url}")
-    response = requests.get(image_url, timeout=30)
-    if response.status_code == 200:
-        return Image.open(io.BytesIO(response.content))
-    else:
-        raise ValueError(f"Failed to download image: {response.status_code}")
+    try:
+        # Special handling for Cloudinary URLs to ensure best quality
+        if "cloudinary.com" in image_url:
+            # Remove any transformation parameters and request original quality
+            parsed_url = urlparse(image_url)
+            path_parts = parsed_url.path.split('/')
+            
+            # Rebuild the URL without transformation parameters
+            # Format: https://res.cloudinary.com/cloud_name/image/upload/v1234567890/path/to/image.jpg
+            filtered_parts = []
+            upload_found = False
+            for part in path_parts:
+                if upload_found or part == "upload":
+                    upload_found = True
+                    filtered_parts.append(part)
+            
+            # Reconstruct the URL with original quality parameters
+            new_path = '/'.join(filtered_parts)
+            clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}/{new_path}?fl_attachment=true"
+            logger.info(f"Optimized Cloudinary URL: {clean_url}")
+            response = requests.get(clean_url, timeout=30)
+        else:
+            # Regular URL download
+            response = requests.get(image_url, timeout=30)
+        
+        if response.status_code == 200:
+            img = Image.open(io.BytesIO(response.content))
+            # Log image details for debugging
+            logger.info(f"Downloaded image: size={img.size}, mode={img.mode}")
+            
+            # Ensure image is in RGB mode for processing
+            if img.mode != "RGB":
+                logger.info(f"Converting image from {img.mode} to RGB mode")
+                img = img.convert("RGB")
+                
+            return img
+        else:
+            raise ValueError(f"Failed to download image: HTTP {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error downloading image from {image_url}: {str(e)}")
+        raise
 
 def generate_depth_map(image):
     """Generate a depth map from an image using DPT model"""
@@ -77,10 +114,23 @@ def generate_depth_map(image):
         )
 
         # Convert to numpy array and normalize
-        depth_map = prediction.squeeze().cpu().numpy()
-        depth_map = (depth_map * 255 / np.max(depth_map)).astype("uint8")
+        output = prediction.squeeze().cpu().numpy()
+        formatted = (output * 255 / np.max(output)).astype("uint8")
+        depth = Image.fromarray(formatted)
         
-        return Image.fromarray(depth_map)
+        # Save a visualization of the depth map
+        try:
+            temp_path = os.path.join("temp", f"depth_vis_{int(time.time())}.png")
+            plt.figure(figsize=(10, 10))
+            plt.imshow(depth, cmap='gray')
+            plt.axis('off')
+            plt.savefig(temp_path)
+            plt.close()
+            logger.info(f"Saved depth map visualization to {temp_path}")
+        except Exception as e:
+            logger.warning(f"Could not save depth visualization: {str(e)}")
+        
+        return depth
     except Exception as e:
         logger.error(f"Failed to generate depth map: {str(e)}")
         raise
@@ -93,26 +143,43 @@ def create_point_cloud(image, depth_map, fx=1000, fy=1000):
     depth_array = np.array(depth_map)
     color_array = np.array(image)
     
-    # Calculate camera parameters
+    # Calculate camera parameters (image center)
     cx = color_array.shape[1] / 2
     cy = color_array.shape[0] / 2
     
-    # Generate point cloud
+    logger.info(f"Image dimensions: {color_array.shape[1]}x{color_array.shape[0]}")
+    logger.info(f"Camera parameters: fx={fx}, fy={fy}, cx={cx}, cy={cy}")
+    
+    # Generate 3D point cloud with colors
     point_cloud = []
     colors = []
+    
+    # Loop through each pixel
     for v in range(depth_array.shape[0]):
         for u in range(depth_array.shape[1]):
-            Z = depth_array[v, u]
+            Z = depth_array[v, u]  # Depth value
             X = (u - cx) * Z / fx
             Y = (v - cy) * Z / fy
             point_cloud.append([X, Y, Z])
             colors.append(color_array[v, u])
     
-    return np.array(point_cloud), np.array(colors) / 255.0
+    logger.info(f"Generated point cloud with {len(point_cloud)} points")
+    
+    # Convert to numpy arrays and normalize colors
+    points = np.array(point_cloud)
+    colors = np.array(colors) / 255.0
+    
+    return points, colors
 
 def create_obj_file(point_cloud, colors):
-    """Create an OBJ file from point cloud data"""
+    """Create an OBJ file from point cloud data, ensuring file size is under 10MB"""
     logger.info("Creating OBJ file")
+    
+    def check_file_size(filepath):
+        """Check if file size is under 10MB"""
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)  # Convert to MB
+        logger.info(f"Current OBJ file size: {size_mb:.2f}MB")
+        return size_mb < 10
     
     # Create Open3D point cloud
     pcd = o3d.geometry.PointCloud()
@@ -121,17 +188,95 @@ def create_obj_file(point_cloud, colors):
     
     # Create a mesh from the point cloud
     try:
-        # Estimate normals
-        pcd.estimate_normals()
-        pcd.orient_normals_consistent_tangent_plane(100)
+        # Estimate normals with better parameters
+        logger.info("Estimating normals...")
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+        )
+        pcd.orient_normals_consistent_tangent_plane(k=30)
         
-        # Create mesh using Poisson reconstruction
-        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=8)
+        # Optional: save point cloud visualization
+        temp_vis_path = os.path.join("temp", f"pointcloud_vis_{int(time.time())}.png")
+        try:
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(visible=False)
+            vis.add_geometry(pcd)
+            vis.update_geometry(pcd)
+            vis.poll_events()
+            vis.update_renderer()
+            vis.capture_screen_image(temp_vis_path)
+            vis.destroy_window()
+            logger.info(f"Saved point cloud visualization to {temp_vis_path}")
+        except Exception as e:
+            logger.warning(f"Could not save point cloud visualization: {str(e)}")
         
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as tmp_file:
-            o3d.io.write_triangle_mesh(tmp_file.name, mesh)
-            return tmp_file.name
+        # Start with higher quality settings
+        depth = 9
+        points_percent = 1.0
+        max_attempts = 3
+        attempt = 0
+        
+        while attempt < max_attempts:
+            # Downsample point cloud if needed
+            working_pcd = pcd
+            if points_percent < 1.0:
+                n_points = len(np.asarray(pcd.points))
+                every_k_points = int(1 / points_percent)
+                working_pcd = pcd.uniform_down_sample(every_k_points)
+                logger.info(f"Downsampled point cloud to {points_percent*100}% ({len(np.asarray(working_pcd.points))} points)")
+            
+            # Create mesh using Poisson reconstruction
+            logger.info(f"Creating mesh using Poisson reconstruction (depth={depth})...")
+            mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                working_pcd, 
+                depth=depth,
+                width=0,
+                scale=1.1,
+                linear_fit=True
+            )
+            
+            # Clean up the mesh
+            logger.info("Cleaning up mesh...")
+            # Remove low density vertices (noise)
+            vertices_to_remove = densities < np.quantile(densities, 0.1)
+            mesh.remove_vertices_by_mask(vertices_to_remove)
+            
+            # Optimize mesh
+            mesh.compute_vertex_normals()
+            mesh.compute_triangle_normals()
+            
+            # Create temporary file for the mesh in the project's temp directory
+            temp_obj_path = os.path.join("temp", f"mesh_{int(time.time())}.obj")
+            logger.info(f"Writing mesh to {temp_obj_path}")
+            o3d.io.write_triangle_mesh(
+                temp_obj_path,
+                mesh,
+                write_vertex_normals=True,
+                write_vertex_colors=True
+            )
+            
+            # Check file size
+            if check_file_size(temp_obj_path):
+                logger.info("OBJ file size is within limits")
+                return temp_obj_path
+            
+            # Clean up the temporary file if too large
+            os.remove(temp_obj_path)
+            
+            # Adjust parameters for next attempt
+            attempt += 1
+            if attempt < max_attempts:
+                if depth > 7:
+                    depth -= 1
+                    logger.info(f"Reducing Poisson depth to {depth}")
+                else:
+                    points_percent *= 0.5
+                    logger.info(f"Reducing point cloud density to {points_percent*100}%")
+                continue
+            
+        logger.error("Failed to create OBJ file under 10MB after multiple attempts")
+        raise ValueError("Could not generate OBJ file under 10MB size limit")
+            
     except Exception as e:
         logger.error(f"Failed to create OBJ file: {str(e)}")
         raise
@@ -308,18 +453,20 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
     """Process an image to create a 3D model
     
     Args:
-        image_url: URL of the image to process
+        image_url: URL of the image to process (Cloudinary URL)
         prompt: Optional text prompt to generate a new image
         use_huggingface: Whether to use Hugging Face API for image generation (default: True)
     
     Returns:
-        dict: Contains URLs for the depth map and 3D model, and a success flag
+        dict: Contains URLs for the image and 3D model, and a success flag
     """
-    logger.info(f"Processing image from {image_url}")
+    logger.info(f"Processing image to 3D from URL: {image_url}")
     
     try:
         # If prompt is provided, generate a new image
         image = None
+        generated_image_url = None
+        
         if prompt:
             logger.info(f"Generating new image for prompt: {prompt}")
             image = generate_image(prompt, use_huggingface=use_huggingface)
@@ -328,44 +475,60 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
                 logger.error("Image generation failed")
                 return {"error": "Failed to generate image", "success": False}
             
-            logger.info("Successfully generated image, using it for 3D conversion")
-        else:
-            # No prompt provided, just download the existing image
+            logger.info("Successfully generated image, uploading to Cloudinary")
+            
+            # Upload the generated image to Cloudinary
+            timestamp = int(time.time())
+            safe_prompt = ''.join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+            
+            # Save image to a temporary file
+            temp_img_path = os.path.join("temp", f"generated_{timestamp}.png")
+            image.save(temp_img_path)            # Upload to Cloudinary in the text-to-3d-web/images folder
+            img_public_id = f"text-to-3d-web/images/{safe_prompt}_{timestamp}"
+            img_response = cloudinary.uploader.upload(
+                temp_img_path,
+                public_id=img_public_id,
+                resource_type="image",
+                unique_filename=True,
+                overwrite=True,
+                quality="auto",
+                fetch_format="auto",
+                eager_async=True,
+                eager=[
+                    {"width": 1024, "height": 1024, "crop": "fill"},
+                    {"width": 512, "height": 512, "crop": "fill"}
+                ]
+            )
+            
+            # Clean up temporary file
+            os.remove(temp_img_path)
+            
+            # Use the new Cloudinary URL for further processing
+            generated_image_url = img_response["secure_url"]
+            image_url = generated_image_url
+            
+            logger.info(f"Uploaded generated image to Cloudinary: {generated_image_url}")
+        
+        # Download image from Cloudinary if we don't already have it
+        if not image:
             image = download_image(image_url)
         
-        # Generate depth map
+        # Generate depth map and create point cloud
+        logger.info("Generating depth map...")
         depth_map = generate_depth_map(image)
-        
-        # Create point cloud and then OBJ file
+        logger.info("Creating point cloud...")
         points, colors = create_point_cloud(image, depth_map)
+        logger.info("Creating OBJ file...")
         obj_file_path = create_obj_file(points, colors)
         
         # Extract Cloudinary path from image URL for consistent naming
         cloudinary_path = extract_cloudinary_path_from_url(image_url)
         timestamp = int(time.time())
+        base_path = cloudinary_path.split('/')[-1]          # Create public IDs for uploads using the text-to-3d-web/models folder
+        model_public_id = f"text-to-3d-web/models/{base_path}_{timestamp}"
         
-        # Create public IDs for uploads
-        if cloudinary_path.startswith("image_"):
-            depth_public_id = f"depth_maps/{cloudinary_path.replace('image_', 'depth_', 1)}"
-            model_public_id = f"3d_models/{cloudinary_path.replace('image_', 'model_', 1)}"
-        else:
-            depth_public_id = f"depth_maps/depth_{timestamp}"
-            model_public_id = f"3d_models/model_{timestamp}"
-        
-        # Save and upload depth map
-        depth_map_buffer = io.BytesIO()
-        depth_map.save(depth_map_buffer, format='PNG')
-        depth_map_buffer.seek(0)
-        
-        depth_response = cloudinary.uploader.upload(
-            depth_map_buffer,
-            public_id=depth_public_id,
-            resource_type="image",
-            unique_filename=True,
-            overwrite=True
-        )
-        
-        # Upload OBJ file
+        # Upload OBJ file to models folder
+        logger.info(f"Uploading 3D model to Cloudinary as {model_public_id}")
         obj_response = cloudinary.uploader.upload(
             obj_file_path,
             public_id=model_public_id,
@@ -377,14 +540,19 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
         # Clean up temporary files
         os.unlink(obj_file_path)
         
-        return {
-            "depth_map_url": depth_response["secure_url"],
+        result = {
             "model_url": obj_response["secure_url"],
             "success": True
         }
         
+        # Add generated image URL if we created one
+        if generated_image_url:
+            result["generated_image_url"] = generated_image_url
+            
+        return result
+        
     except Exception as e:
-        logger.error(f"Failed to process image: {str(e)}")
+        logger.error(f"Failed to process image to 3D: {str(e)}", exc_info=True)
         return {
             "error": str(e),
             "success": False

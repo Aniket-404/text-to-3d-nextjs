@@ -1,22 +1,26 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import Link from 'next/link';
-import { FaUser, FaMagic, FaInfoCircle, FaGithub, FaDownload, FaShare } from 'react-icons/fa';
-import ModelViewer from '@/components/ModelViewer';
+import { useState } from 'react';
+import { FaDownload, FaMagic } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import useAuth from '@/hooks/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { generateCloudinaryPaths } from '@/lib/cloudinaryUtils';
+import ModelViewer from '@/components/ModelViewer';
 
 export default function Home() {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [modelUrl, setModelUrl] = useState<string | null>(null);
+  const [generatedUrls, setGeneratedUrls] = useState<{
+    image_url: string | null;
+    model_url: string | null;
+    depth_map_url: string | null;
+  }>({
+    image_url: null,
+    model_url: null,
+    depth_map_url: null
+  });
   const [generationStep, setGenerationStep] = useState(0);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [depthUrl, setDepthUrl] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'image' | '3d'>('image');
   const { user } = useAuth();
 
@@ -28,9 +32,11 @@ export default function Home() {
     
     setIsGenerating(true);
     setGenerationStep(1);
-    setModelUrl(null);
-    setImageUrl(null);
-    setDepthUrl(null);
+    setGeneratedUrls({
+      image_url: null,
+      model_url: null,
+      depth_map_url: null
+    });
     setViewMode('image');
     
     const generatePromise = new Promise(async (resolve, reject) => {
@@ -54,7 +60,7 @@ export default function Home() {
         console.log('API Response:', data);
           // Set the image URL if it exists
         if (data.url) {
-          setImageUrl(data.url);
+          setGeneratedUrls((prev) => ({ ...prev, image_url: data.url }));
           setGenerationStep(3);
           // Check if it's a fallback image
           if (data.source === 'fallback') {
@@ -69,7 +75,7 @@ export default function Home() {
         
         // If we have a valid model URL, set it
         if (data.publicId) {
-          setModelUrl(data.publicId);
+          setGeneratedUrls((prev) => ({ ...prev, model_url: data.publicId }));
           setGenerationStep(4);
         }
         
@@ -132,41 +138,42 @@ export default function Home() {
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md border-b border-white/5 bg-background/60">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <Link href="/" className="text-2xl font-bold text-gradient">
+          <a href="/" className="text-2xl font-bold text-gradient">
             3Dify
-          </Link>
+          </a>
           
           <div className="flex items-center space-x-4">
-            <Link 
+            <a 
               href="#" 
               className="text-text-secondary hover:text-primary transition-colors"
               title="About"
             >
-              <FaInfoCircle />
-            </Link>            <Link 
+              About
+            </a>
+            <a 
               href="https://github.com" 
               target="_blank"
               className="text-text-secondary hover:text-primary transition-colors"
               title="GitHub"
             >
-              <FaGithub />
-            </Link>
+              GitHub
+            </a>
             {user ? (
-              <Link 
+              <a 
                 href="/dashboard" 
                 className="flex items-center space-x-2 bg-surface/50 hover:bg-surface/80 px-3 py-2 rounded-md transition-colors"
               >
-                <FaUser />
+                <FaMagic />
                 <span>Dashboard</span>
-              </Link>
+              </a>
             ) : (
-              <Link 
+              <a 
                 href="/auth/login" 
                 className="flex items-center space-x-2 bg-surface/50 hover:bg-surface/80 px-3 py-2 rounded-md transition-colors"
               >
-                <FaUser />
+                <FaMagic />
                 <span>Login</span>
-              </Link>
+              </a>
             )}
           </div>
         </div>
@@ -228,7 +235,7 @@ export default function Home() {
                 {viewMode === 'image' ? 'Generated Image' : '3D Model Preview'}
               </h2>              
               {/* Toggle buttons for view mode */}
-              {(imageUrl || modelUrl) && (
+              {(generatedUrls.image_url || generatedUrls.model_url) && (
                 <div className="flex bg-surface/30 rounded-md">
                   <button 
                     className={`toggle-button ${viewMode === 'image' ? 'active' : ''}`}
@@ -247,19 +254,19 @@ export default function Home() {
             </div>
             
             <div className="aspect-square w-full rounded-lg overflow-hidden">              {/* Image Preview Mode */}
-              {viewMode === 'image' && imageUrl ? (
+              {viewMode === 'image' && generatedUrls.image_url ? (
                 <div className="image-preview-container w-full h-full">
                   <img 
-                    src={imageUrl} 
+                    src={generatedUrls.image_url} 
                     alt={prompt || 'Generated image'} 
                     className="w-full h-full object-cover rounded-lg"
                   />
                   
                   {/* Optional: Show depth map in a small corner */}
-                  {depthUrl && (
+                  {generatedUrls.depth_map_url && (
                     <div className="depth-preview">
                       <img 
-                        src={depthUrl} 
+                        src={generatedUrls.depth_map_url} 
                         alt="Depth map" 
                         className="w-full h-full object-cover"
                       />
@@ -267,7 +274,7 @@ export default function Home() {
                   )}
                 </div>              ) : viewMode === '3d' ? (
                 // In 3D mode, use ModelViewer with whatever URL we have
-                <ModelViewer modelUrl={modelUrl || imageUrl || ''} />
+                <ModelViewer modelUrl={generatedUrls.model_url || generatedUrls.image_url || ''} />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-black/40 rounded-lg">
                   {isGenerating ? (
@@ -289,9 +296,9 @@ export default function Home() {
               )}
             </div>
             
-            {(imageUrl || modelUrl) && (
+            {(generatedUrls.image_url || generatedUrls.model_url) && (
               <div className="mt-4 space-y-4">
-                {viewMode === '3d' && modelUrl && (
+                {viewMode === '3d' && generatedUrls.model_url && (
                   <div className="flex justify-between text-sm text-text-secondary">
                     <span>Format: OBJ</span>
                     <span>~10,000 polygons</span>
@@ -299,10 +306,10 @@ export default function Home() {
                 )}
                 
                 <div className="flex space-x-2">
-                  {viewMode === 'image' && imageUrl ? (
+                  {viewMode === 'image' && generatedUrls.image_url ? (
                     <>
                       <a 
-                        href={imageUrl} 
+                        href={generatedUrls.image_url} 
                         download={`3dify-image-${Date.now()}.png`}
                         className="flex-1 gradient-button py-2 text-sm flex items-center justify-center space-x-2"
                         target="_blank"
@@ -315,7 +322,7 @@ export default function Home() {
                         onClick={() => {
                           setViewMode('3d');
                           // Even without a model URL, we'll attempt to show a 3D representation
-                          if (!modelUrl) {
+                          if (!generatedUrls.model_url) {
                             toast('Showing basic 3D representation of the image', {
                               icon: 'ℹ️',
                               duration: 3000
@@ -328,9 +335,9 @@ export default function Home() {
                       </button>
                     </>                  ) : viewMode === '3d' ? (
                     <>
-                      {modelUrl ? (
+                      {generatedUrls.model_url ? (
                         <a 
-                          href={modelUrl} 
+                          href={generatedUrls.model_url} 
                           download={`3dify-model-${Date.now()}.obj`}
                           className="flex-1 gradient-button py-2 text-sm flex items-center justify-center space-x-2"
                           target="_blank"
@@ -355,7 +362,7 @@ export default function Home() {
                           toast.success('Switched to image view');
                         }}
                       >
-                        <FaShare />
+                        <FaDownload />
                         <span>View Image</span>
                       </button>
                     </>
