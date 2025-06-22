@@ -244,6 +244,8 @@ export default function Home() {
                       <a
                         href={generatedUrls.image_url || undefined}
                         download
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
                       >
                         <FaDownload />
@@ -282,6 +284,8 @@ export default function Home() {
                     <a
                       href={generatedUrls.model_url || undefined}
                       download
+                      target="_blank"
+                      rel="noopener noreferrer"
                       className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
                     >
                       <FaDownload />
