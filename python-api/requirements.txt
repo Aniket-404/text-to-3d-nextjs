@@ -1,6 +1,6 @@
 Flask==2.2.5
 matplotlib==3.7.2
-numpy==1.26.4
+numpy==1.24.3
 open3d==0.18.0
 Pillow==10.3.0
 requests==2.31.0
@@ -18,6 +18,8 @@ plotly==5.18.0
 diffusers==0.27.0
 accelerate==0.27.0
 safetensors==0.4.2
+google-generativeai>=0.3.0
+protobuf>=3.20.3,<5.0.0dev
 # xformers disabled for CPU-only operation
 filelock==3.13.1
 tqdm==4.66.2

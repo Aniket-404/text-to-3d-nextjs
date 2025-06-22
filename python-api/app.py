@@ -119,15 +119,32 @@ cloudinary.config(
 # Log in to Hugging Face Hub
 huggingface_token = os.environ.get("HUGGINGFACE_API_KEY")
 if not huggingface_token:
-    raise ValueError("HUGGINGFACE_API_KEY not found in environment variables")
+    logger.warning("HUGGINGFACE_API_KEY not found in environment variables. Some features may be limited.")
+else:
+    try:
+        # First login with the token
+        login(token=huggingface_token)
+        # Then verify token and get user info
+        user_info = whoami()
+        logger.info(f"Successfully logged in to Hugging Face Hub as {user_info['name']}")
+    except Exception as e:
+        logger.warning(f"Failed to log in to Hugging Face Hub: {str(e)}")
+        logger.info("Continuing without Hugging Face authentication. Some features may be limited.")
+        # Set the token to None to prevent further attempts to use it
+        huggingface_token = None
 
-try:
-    # Verify token and get user info
-    user_info = whoami()
-    logger.info(f"Successfully logged in to Hugging Face Hub as {user_info['name']}")
-    login(token=huggingface_token)
-except Exception as e:
-    logger.error(f"Failed to log in to Hugging Face Hub: {str(e)}")
+# Check for Gemini API key
+gemini_key = os.environ.get("GEMINI_API_KEY")
+if gemini_key:
+    logger.info("Gemini API key found. Gemini will be available for image generation.")
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gemini_key)
+        logger.info("Successfully configured Gemini API")
+    except Exception as e:
+        logger.warning(f"Failed to configure Gemini API: {str(e)}")
+else:
+    logger.warning("GEMINI_API_KEY not found in environment variables. Gemini features will not be available.")
     raise
 
 # Initialize SDXL pipeline globally
@@ -147,30 +164,23 @@ def get_pipeline():
                 logger.info(f"CUDA available: {torch.cuda.is_available()}")
                 if torch.cuda.is_available():
                     logger.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
-                  # Get model ID from environment variables
-                model_id = os.environ.get("SD_MODEL_ID", "CompVis/stable-diffusion-v1-4")
+                
+                # Get model ID from environment variables - use a model that doesn't require auth
+                model_id = os.environ.get("SD_MODEL_ID", "runwayml/stable-diffusion-v1-5")
                 
                 logger.info(f"Loading model {model_id}...")
-                # Use file lock to prevent concurrent downloads
-                with model_lock:
-                    # Check if model is already downloaded
-                    model_path = cache_dir / "models" / model_id
-                    if model_path.exists():
-                        logger.info("Model already downloaded, loading from cache...")
-                    else:
-                        logger.info("Downloading model (this may take a while)...")
-                        success = download_with_progress(model_id, str(cache_dir / "models"))
-                        if not success:
-                            raise RuntimeError("Failed to download model files")
-                    
-                    # Load the model with optimizations
+                
+                # Load the model with optimizations
+                try:
                     pipe = DiffusionPipeline.from_pretrained(
                         model_id,
                         torch_dtype=torch.float32,  # Use float32 for CPU
-                        use_safetensors=True,
-                        cache_dir=str(cache_dir / "models"),
-                        local_files_only=True  # Only use local files after download
+                        use_safetensors=True
                     )
+                    logger.info(f"Successfully loaded model {model_id}")
+                except Exception as e:
+                    logger.error(f"Error loading model: {str(e)}")
+                    raise RuntimeError(f"Failed to load model: {str(e)}")
                 
                 logger.info("Model loaded, configuring device settings...")
                 # Move to GPU if available
@@ -227,28 +237,47 @@ def generate():
     try:
         logger.info(f"Processing prompt: {prompt}")
         
-        try:
-            # Get the pipeline (initialized on first use)
-            pipeline = get_pipeline()
-            if pipeline is None:
-                raise RuntimeError("Failed to initialize pipeline")
-            
-            logger.info("Starting image generation...")            # Generate image with smaller model
-            image = pipeline(
-                prompt=prompt,
-                num_inference_steps=20,  # Fewer steps for faster generation
-                guidance_scale=7.5,
-                width=512,  # Smaller image
-                height=512  # Smaller image
-            ).images[0]
-            logger.info("Image generation complete!")
-            
-            image_source = "generated"
-            
-        except Exception as e:
-            error_msg = f"Image generation error: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            logger.info("Using fallback placeholder image...")
+        # Import the image generation functions
+        from depth_map import generate_image_with_huggingface, generate_image_with_gemini
+        
+        # Try Hugging Face first (as requested)
+        image = None
+        image_source = "generated"
+        
+        huggingface_token = os.environ.get("HUGGINGFACE_API_KEY")
+        if huggingface_token:
+            try:
+                logger.info("Attempting to generate image with Hugging Face API...")
+                image = generate_image_with_huggingface(prompt)
+                if image:
+                    logger.info("Successfully generated image with Hugging Face API!")
+                    image_source = "huggingface-api"
+                else:
+                    logger.warning("Hugging Face API image generation returned None")
+            except Exception as e:
+                logger.error(f"Hugging Face API image generation error: {str(e)}", exc_info=True)
+                logger.info("Trying alternative image generation methods...")
+        else:
+            logger.warning("No valid Hugging Face API key found. Trying alternative methods.")
+        
+        # If Hugging Face API failed, try Gemini
+        if image is None:
+            gemini_key = os.environ.get("GEMINI_API_KEY")
+            if gemini_key:
+                try:
+                    logger.info("Attempting to generate image with Gemini...")
+                    image = generate_image_with_gemini(prompt)
+                    if image:
+                        logger.info("Successfully generated image with Gemini!")
+                        image_source = "gemini"
+                except Exception as e:
+                    logger.error(f"Gemini image generation error: {str(e)}", exc_info=True)
+            else:
+                logger.warning("No valid Gemini API key found.")
+        
+        # If all API methods failed, use fallback
+        if image is None:
+            logger.info("All API image generation methods failed. Using fallback placeholder...")
             
             # Use a fallback image
             placeholder_path = os.path.join(os.path.dirname(__file__), "placeholder.png")
@@ -258,7 +287,7 @@ def generate():
                 # Create a simple placeholder image
                 image = Image.new('RGB', (1024, 1024), color=(73, 109, 137))
                 d = ImageDraw.Draw(image)
-                d.text((10, 10), f"Error: {str(e)[:200]}", fill=(255, 255, 0))
+                d.text((10, 10), f"Error: All image generation methods failed", fill=(255, 255, 0))
                 d.text((10, 30), f"Prompt: {prompt[:200]}", fill=(255, 255, 0))
                 image.save(placeholder_path)
             
