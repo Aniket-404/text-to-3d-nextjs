@@ -38,11 +38,15 @@ cloudinary.config(
     api_secret=os.environ.get("CLOUDINARY_API_SECRET")
 )
 
-# Initialize the DPT model and processor
+# Initialize the DPT model and processor with CUDA if available
 try:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     processor = DPTImageProcessor.from_pretrained("Intel/dpt-beit-large-512")
-    model = DPTForDepthEstimation.from_pretrained("Intel/dpt-beit-large-512")
-    logger.info("Successfully initialized DPT model")
+    model = DPTForDepthEstimation.from_pretrained("Intel/dpt-beit-large-512").to(device)
+    if device.type == "cuda":
+        logger.info(f"Successfully initialized DPT model on GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        logger.info("GPU not available, initialized DPT model on CPU")
 except Exception as e:
     logger.error(f"Failed to initialize DPT model: {str(e)}")
     raise
@@ -97,8 +101,14 @@ def generate_depth_map(image):
     logger.info("Generating depth map using DPT")
     
     try:
+        # Get the current device
+        device = next(model.parameters()).device
+        logger.info(f"Using device: {device}")
+        
         # Prepare image for the model
         inputs = processor(images=image, return_tensors="pt")
+        # Move inputs to the same device as the model
+        inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
         
         # Generate depth prediction
         with torch.no_grad():
