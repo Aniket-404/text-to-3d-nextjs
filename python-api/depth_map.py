@@ -218,46 +218,40 @@ def create_obj_file(point_cloud, colors):
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(point_cloud)
     pcd.colors = o3d.utility.Vector3dVector(colors)
-    
-    # Initial downsampling to reduce processing time
+      # Aggressive initial downsampling for performance
     logger.info(f"Initial point cloud size: {len(point_cloud)} points")
-    if len(point_cloud) > 100000:  # If more than 100k points
-        voxel_size = 0.01  # Start with 1cm voxel size
+    target_points = 50000  # Target 50k points for good balance
+    if len(point_cloud) > target_points:
+        # Calculate voxel size to achieve target point count
+        # Assuming uniform distribution, cube root of ratio gives approximate voxel size
+        ratio = (len(point_cloud) / target_points) ** (1/3)
+        voxel_size = 0.02 * ratio  # Base size 2cm * ratio
         pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
-        logger.info(f"Downsampled to {len(pcd.points)} points using voxel size {voxel_size}")
+        logger.info(f"Downsampled to {len(pcd.points)} points using voxel size {voxel_size:.3f}")
     
     # Create a mesh from the point cloud
-    try:        # Estimate normals with optimized parameters
-        logger.info("Starting normal estimation (this may take a few moments)...")
-        # Use fewer nearest neighbors and smaller radius for faster computation
+    try:
+        # Estimate normals with optimized parameters
+        logger.info("Starting normal estimation...")
+        # Use optimized parameters for faster normal estimation
         pcd.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=20)
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                radius=0.1,  # Larger radius
+                max_nn=15    # Fewer neighbors
+            )
         )
         logger.info("Basic normal estimation complete, orienting normals...")
         
-        # Reduce k parameter for faster orientation
-        pcd.orient_normals_consistent_tangent_plane(k=15)
+        # Faster normal orientation with fewer neighbors
+        pcd.orient_normals_consistent_tangent_plane(k=10)
         logger.info("Normal estimation completed")
         
-        # Optional: save point cloud visualization
-        temp_vis_path = os.path.join("temp", f"pointcloud_vis_{int(time.time())}.png")
-        try:
-            vis = o3d.visualization.Visualizer()
-            vis.create_window(visible=False)
-            vis.add_geometry(pcd)
-            vis.update_geometry(pcd)
-            vis.poll_events()
-            vis.update_renderer()
-            vis.capture_screen_image(temp_vis_path)
-            vis.destroy_window()
-            logger.info(f"Saved point cloud visualization to {temp_vis_path}")
-        except Exception as e:
-            logger.warning(f"Could not save point cloud visualization: {str(e)}")
+        # Skip point cloud visualization for faster processing
         
-        # Start with higher quality settings
-        depth = 9
+        # Start with optimized quality settings
+        depth = 7  # Start with depth 7 which usually gives good results
         points_percent = 1.0
-        max_attempts = 3
+        max_attempts = 2  # Reduce max attempts since we're starting with better params
         attempt = 0
         
         while attempt < max_attempts:
@@ -268,22 +262,27 @@ def create_obj_file(point_cloud, colors):
                 every_k_points = int(1 / points_percent)
                 working_pcd = pcd.uniform_down_sample(every_k_points)
                 logger.info(f"Downsampled point cloud to {points_percent*100}% ({len(np.asarray(working_pcd.points))} points)")
-            
-            # Create mesh using Poisson reconstruction
+              # Create mesh using optimized Poisson reconstruction
             logger.info(f"Creating mesh using Poisson reconstruction (depth={depth})...")
             mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
                 working_pcd, 
                 depth=depth,
                 width=0,
-                scale=1.1,
+                scale=1.0,  # Reduced scale for faster processing
                 linear_fit=True
             )
             
             # Clean up the mesh
             logger.info("Cleaning up mesh...")
-            # Remove low density vertices (noise)
-            vertices_to_remove = densities < np.quantile(densities, 0.1)
+            # More aggressive noise removal
+            vertices_to_remove = densities < np.quantile(densities, 0.15)  # Remove more low-density vertices
             mesh.remove_vertices_by_mask(vertices_to_remove)
+            
+            # Optimize the mesh
+            if len(np.asarray(mesh.vertices)) > target_points:
+                # Decimate mesh to reduce complexity while preserving shape
+                reduction_ratio = target_points / len(np.asarray(mesh.vertices))
+                mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=int(len(np.asarray(mesh.triangles)) * reduction_ratio))
             
             # Optimize mesh
             mesh.compute_vertex_normals()
@@ -306,16 +305,13 @@ def create_obj_file(point_cloud, colors):
             
             # Clean up the temporary file if too large
             os.remove(temp_obj_path)
-            
-            # Adjust parameters for next attempt
+              # Adjust parameters for next attempt
             attempt += 1
             if attempt < max_attempts:
-                if depth > 7:
-                    depth -= 1
-                    logger.info(f"Reducing Poisson depth to {depth}")
-                else:
-                    points_percent *= 0.5
-                    logger.info(f"Reducing point cloud density to {points_percent*100}%")
+                # On second attempt, reduce both depth and point density
+                depth = 6
+                points_percent = 0.5
+                logger.info(f"Reducing parameters: depth={depth}, density={points_percent*100}%")
                 continue
             
         logger.error("Failed to create OBJ file under 10MB after multiple attempts")
