@@ -55,28 +55,28 @@ export default function Home() {
           console.error('API Error:', errorData);
           throw new Error(errorData.error || 'Failed to generate 3D model');
         }
-        
-        const data = await response.json();
+          const data = await response.json();
         console.log('API Response:', data);
-          // Set the image URL if it exists
-        if (data.url) {
-          setGeneratedUrls((prev) => ({ ...prev, image_url: data.url }));
-          setGenerationStep(3);
-          // Check if it's a fallback image
-          if (data.source === 'fallback') {
-            toast('Using a fallback image due to generation issues. You can still view it as a basic 3D model.', {
-              icon: '⚠️',
-              duration: 5000
-            });
-          }
-        } else {
-          throw new Error('No image URL returned from API');
+
+        if (!data.success) {
+          throw new Error(data.error || 'Failed to generate 3D model');
         }
-        
-        // If we have a valid model URL, set it
-        if (data.publicId) {
-          setGeneratedUrls((prev) => ({ ...prev, model_url: data.publicId }));
-          setGenerationStep(4);
+
+        // Set all URLs from the API response
+        setGeneratedUrls({
+          image_url: data.image_url || null,
+          model_url: data.model_url || null,
+          depth_map_url: data.depth_map_url || null
+        });
+
+        setGenerationStep(data.model_url ? 4 : 3);
+
+        // Optional fallback handling if needed
+        if (data.source === 'fallback') {
+          toast('Using a fallback image due to generation issues. You can still view it as a basic 3D model.', {
+            icon: '⚠️',
+            duration: 5000
+          });
         }
         
         // Store the generated model if user is logged in
@@ -87,9 +87,9 @@ export default function Home() {
               const modelsCollection = collection(db, 'models');
               await addDoc(modelsCollection, {
                 userId: user.uid,
-                prompt,
-                imagePath: data.imageUrl,
-                publicId: data.publicId,
+                prompt,                imagePath: data.image_url,
+                modelUrl: data.model_url,
+                depthMapUrl: data.depth_map_url,
                 createdAt: serverTimestamp()
               });
             }

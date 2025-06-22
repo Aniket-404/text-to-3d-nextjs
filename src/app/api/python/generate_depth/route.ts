@@ -3,22 +3,22 @@ import { NextResponse } from 'next/server';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { imagePath } = body;
+    const { prompt } = body;
     
-    if (!imagePath) {
+    if (!prompt) {
       return NextResponse.json(
-        { error: 'Image path is required' }, 
+        { error: 'Prompt is required' }, 
         { status: 400 }
       );
     }
     
     // Call the Python API
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/generate_depth`, {
+    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ imagePath }),
+      body: JSON.stringify({ prompt }),
     });
     
     if (!response.ok) {
