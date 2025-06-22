@@ -27,6 +27,9 @@ import matplotlib.pyplot as plt
 # Load environment variables
 load_dotenv()
 
+# Load GitHub API key (for authenticated GitHub API requests)
+GITHUB_API_KEY = os.environ.get("GITHUB_API_KEY")
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -370,7 +373,7 @@ def generate_image_with_gemini(prompt):
         genai.configure(api_key=gemini_key)
         
         # Initialize Gemini model
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Generate the image
         logger.info(f"Calling Gemini model with prompt: {prompt}")
@@ -456,10 +459,57 @@ def generate_image_with_huggingface(prompt):
         logger.error(f"Error generating image with Hugging Face API: {str(e)}")
         return None
 
-def generate_image(prompt, use_huggingface=True):
-    """Generate an image using available APIs"""
+def generate_image_with_github(prompt):
+    """Generate an image using GitHub's OpenAI proxy API (if supported)"""
+    logger.info(f"Generating image with GitHub OpenAI proxy for prompt: {prompt}")
+    try:
+        from openai import OpenAI
+        token = os.environ.get("GITHUB_API_KEY") or os.environ.get("GITHUB_TOKEN")
+        if not token:
+            logger.error("GitHub API key is required for GitHub image generation")
+            return None
+        endpoint = "https://models.github.ai/inference"
+        model_name = os.environ.get("GITHUB_IMAGE_MODEL", "openai/dall-e-3")
+        client = OpenAI(
+            base_url=endpoint,
+            api_key=token,
+        )
+        logger.info(f"Calling GitHub OpenAI proxy with model: {model_name}")
+        try:
+            response = client.images.generate(
+                model=model_name,
+                prompt=prompt,
+                n=1,
+                size="1024x1024"
+            )
+            if response and response.data and response.data[0].url:
+                image_url = response.data[0].url
+                logger.info(f"Image generated, downloading from {image_url}")
+                img = download_image(image_url)
+                return img
+            else:
+                logger.error("No image URL returned from GitHub OpenAI proxy")
+                return None
+        except Exception as e:
+            if "404" in str(e):
+                logger.error("GitHub OpenAI proxy does not support image generation (404 Not Found). Skipping this fallback.")
+            else:
+                logger.error(f"Error generating image with GitHub OpenAI proxy: {str(e)}")
+            return None
+    except Exception as e:
+        logger.error(f"Error generating image with GitHub OpenAI proxy: {str(e)}")
+        return None
+
+def generate_image(prompt, use_huggingface=True, use_github=False):
+    """Generate an image using available APIs, optionally using GitHub proxy"""
     logger.info(f"Generating image for prompt: {prompt}")
-    
+    if use_github:
+        image = generate_image_with_github(prompt)
+        if image:
+            logger.info("Successfully generated image with GitHub OpenAI proxy")
+            return image
+        else:
+            logger.warning("GitHub OpenAI proxy image generation failed, trying Hugging Face/Gemini")
     if use_huggingface:
         # Try Hugging Face first (as requested)
         image = generate_image_with_huggingface(prompt)
@@ -468,7 +518,6 @@ def generate_image(prompt, use_huggingface=True):
             return image
         else:
             logger.warning("Hugging Face API image generation failed, trying Gemini")
-    
     # Try Gemini as fallback
     try:
         image = generate_image_with_gemini(prompt)
@@ -477,9 +526,7 @@ def generate_image(prompt, use_huggingface=True):
             return image
     except Exception as e:
         logger.error(f"Gemini image generation failed: {str(e)}")
-        
-        # If Hugging Face wasn't already tried, try it now
-        if not use_huggingface:
+        if not use_huggingface and not use_github:
             logger.info("Trying Hugging Face API as fallback")
             image = generate_image_with_huggingface(prompt)
             if image:
@@ -510,7 +557,9 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
         if prompt:
             logger.info(f"Generating new image for prompt: {prompt}")
             image = generate_image(prompt, use_huggingface=use_huggingface)
-            
+            if not image:
+                logger.warning("Hugging Face/Gemini image generation failed, trying GitHub OpenAI proxy...")
+                image = generate_image(prompt, use_huggingface=False, use_github=True)
             if not image:
                 logger.error("Image generation failed")
                 return {"error": "Failed to generate image", "success": False}
@@ -617,3 +666,61 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
             "error": str(e),
             "success": False
         }
+
+def github_api_request(endpoint, method="GET", params=None, data=None, headers=None, stream=False):
+    """
+    Make an authenticated request to the GitHub API using the GITHUB_API_KEY.
+    Args:
+        endpoint (str): The GitHub API endpoint (e.g., '/repos/owner/repo/contents/path/to/file').
+        method (str): HTTP method ('GET', 'POST', etc.).
+        params (dict): Query parameters.
+        data (dict): Data for POST/PUT requests.
+        headers (dict): Additional headers.
+        stream (bool): Whether to stream the response.
+    Returns:
+        Response object or None if error.
+    """
+    if not GITHUB_API_KEY:
+        logger.error("GITHUB_API_KEY is not set in environment variables.")
+        return None
+    base_url = "https://api.github.com"
+    url = base_url + endpoint
+    req_headers = {
+        "Authorization": f"token {GITHUB_API_KEY}",
+        "Accept": "application/vnd.github+json"
+    }
+    if headers:
+        req_headers.update(headers)
+    try:
+        response = requests.request(method, url, params=params, json=data, headers=req_headers, stream=stream, timeout=30)
+        response.raise_for_status()
+        return response
+    except Exception as e:
+        logger.error(f"GitHub API request failed: {str(e)}")
+        return None
+
+# Example: Fetch a file from a GitHub repo (returns raw content as bytes)
+def fetch_github_file(owner, repo, path, ref="main"):
+    """
+    Fetch a file from a GitHub repository using the API key.
+    Args:
+        owner (str): Repository owner.
+        repo (str): Repository name.
+        path (str): File path in the repo.
+        ref (str): Branch or commit SHA (default: 'main').
+    Returns:
+        bytes: File content, or None if error.
+    """
+    endpoint = f"/repos/{owner}/{repo}/contents/{path}"
+    params = {"ref": ref}
+    response = github_api_request(endpoint, params=params)
+    if response and response.status_code == 200:
+        content_json = response.json()
+        if content_json.get("encoding") == "base64":
+            import base64
+            return base64.b64decode(content_json["content"])
+        else:
+            logger.error("Unexpected encoding in GitHub file response.")
+    else:
+        logger.error(f"Failed to fetch file from GitHub: {owner}/{repo}/{path}")
+    return None
