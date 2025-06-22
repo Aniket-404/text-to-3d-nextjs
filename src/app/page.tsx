@@ -243,7 +243,11 @@ export default function Home() {
                     <div className="absolute bottom-2 left-2">
                       <a
                         href={generatedUrls.image_url || undefined}
-                        download
+                        download={
+                          generatedUrls.image_url
+                            ? `3dify-image-${Date.now()}.png`
+                            : undefined
+                        }
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
