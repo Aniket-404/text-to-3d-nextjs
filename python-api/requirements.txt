@@ -7,7 +7,7 @@ requests==2.31.0
 torch==2.1.1
 torchvision==0.16.1
 torchaudio==2.1.1
-transformers==4.39.3
+#transformers==4.39.3
 python-dotenv==1.0.0
 flask-cors==4.0.0
 cloudinary==1.37.0
@@ -16,7 +16,7 @@ uvicorn==0.22.0
 huggingface_hub==0.20.2
 packaging==24.0
 plotly==5.18.0
-diffusers==0.27.0
+#iffusers==0.27.0
 accelerate==0.27.0
 safetensors==0.4.2
 google-generativeai>=0.3.0
