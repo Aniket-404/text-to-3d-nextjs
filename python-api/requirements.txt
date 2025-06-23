@@ -12,6 +12,7 @@ python-dotenv==1.0.0
 flask-cors==4.0.0
 cloudinary==1.37.0
 gunicorn==21.2.0
+uvicorn==0.22.0
 huggingface_hub==0.20.2
 packaging==24.0
 plotly==5.18.0
