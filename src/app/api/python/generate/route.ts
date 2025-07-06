@@ -60,6 +60,7 @@ export async function POST(request: Request) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ prompt }),
+        signal: request.signal, // Pass through the abort signal
       });
     
       if (!response.ok) {
@@ -88,11 +89,19 @@ export async function POST(request: Request) {
       
     } catch (error: any) {
       console.error('Fetch error:', error);
+      
+      // If the request was aborted, we can't reliably cancel the backend job
+      // since we don't have the job_id. The backend will clean up old jobs automatically.
+      if (error.name === 'AbortError') {
+        return NextResponse.json(
+          { error: 'Request was cancelled', cancelled: true },
+          { status: 499 }
+        );
+      }
+      
       return NextResponse.json(
         { 
-          error: error.name === 'AbortError' 
-            ? 'Image generation is taking longer than usual. Please try again.' 
-            : 'Failed to communicate with Python API'
+          error: 'Failed to communicate with Python API'
         },
         { status: 500 }
       );

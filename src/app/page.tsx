@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FaDownload, FaMagic, FaFileUpload, FaKeyboard } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import useAuth from '@/hooks/useAuth';
@@ -28,7 +28,72 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const { user } = useAuth();
 
+  // Refs to store abort controllers and job IDs for ongoing requests
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const generateAbortControllerRef = useRef<AbortController | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
+
+  // Function to cancel a backend job
+  const cancelBackendJob = async (jobId: string) => {
+    try {
+      await fetch('/api/python/cancel', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+      console.log(`Cancelled backend job: ${jobId}`);
+    } catch (error) {
+      console.error('Error cancelling backend job:', error);
+    }
+  };
+
+  // Cleanup function to abort all ongoing requests
+  const abortAllRequests = () => {
+    if (uploadAbortControllerRef.current) {
+      uploadAbortControllerRef.current.abort();
+      uploadAbortControllerRef.current = null;
+    }
+    if (generateAbortControllerRef.current) {
+      generateAbortControllerRef.current.abort();
+      generateAbortControllerRef.current = null;
+    }
+    
+    // Cancel backend job if one is running
+    if (currentJobIdRef.current) {
+      cancelBackendJob(currentJobIdRef.current);
+      currentJobIdRef.current = null;
+    }
+  };
+
+  // Effect to handle page unload/refresh
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      abortAllRequests();
+    };
+
+    // Only add beforeunload listener, not visibilitychange
+    // visibilitychange is too aggressive and triggers on tab switches
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Cleanup on component unmount
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      abortAllRequests();
+    };
+  }, []);
+
   const handleImageUpload = async (file: File) => {
+    // Abort any previous upload request
+    if (uploadAbortControllerRef.current) {
+      uploadAbortControllerRef.current.abort();
+    }
+
+    // Create new abort controller for this request
+    const abortController = new AbortController();
+    uploadAbortControllerRef.current = abortController;
+
     // Show the uploaded image immediately
     const fileUrl = URL.createObjectURL(file);
     setUploadedImageUrl(fileUrl);
@@ -48,6 +113,7 @@ export default function Home() {
         const response = await fetch('/api/python/upload', {
           method: 'POST',
           body: formData,
+          signal: abortController.signal, // Add abort signal
         });
 
         if (!response.ok) {
@@ -56,6 +122,11 @@ export default function Home() {
         }
 
         const data = await response.json();
+        
+        // Store job ID for potential cancellation
+        if (data.job_id) {
+          currentJobIdRef.current = data.job_id;
+        }
         
         // Update with server URLs (replace the local file URL)
         setGeneratedUrls({
@@ -93,8 +164,21 @@ export default function Home() {
       } catch (error: any) {
         // Clean up the local object URL on error
         URL.revokeObjectURL(fileUrl);
+        
+        // Don't show error if request was aborted
+        if (error.name === 'AbortError') {
+          console.log('Upload request was aborted');
+          return;
+        }
+        
         console.error('Upload Error:', error);
         reject(error);
+      } finally {
+        // Clear the abort controller reference and job ID
+        if (uploadAbortControllerRef.current === abortController) {
+          uploadAbortControllerRef.current = null;
+        }
+        currentJobIdRef.current = null;
       }
     });
 
@@ -102,6 +186,9 @@ export default function Home() {
       loading: 'Uploading and converting to 3D...',
       success: 'Upload and conversion complete!',
       error: (err) => {
+        // Don't show error toast for aborted requests
+        if (err?.name === 'AbortError') return null;
+        
         if (err.message.includes('Invalid file type')) {
           return 'Please upload a valid image file (JPEG, PNG, GIF, BMP, WebP)';
         }
@@ -114,8 +201,11 @@ export default function Home() {
 
     try {
       await uploadPromise;
-    } catch (error) {
-      // Error is handled by toast.promise
+    } catch (error: any) {
+      // Error is handled by toast.promise, but check if it was aborted
+      if (error?.name === 'AbortError') {
+        console.log('Upload was aborted by user');
+      }
     } finally {
       setIsUploading(false);
     }
@@ -139,6 +229,15 @@ export default function Home() {
       toast.error('Please enter a prompt');
       return;
     }
+
+    // Abort any previous generate request
+    if (generateAbortControllerRef.current) {
+      generateAbortControllerRef.current.abort();
+    }
+
+    // Create new abort controller for this request
+    const abortController = new AbortController();
+    generateAbortControllerRef.current = abortController;
     
     setIsGenerating(true);
     setGenerationStep(1);
@@ -156,6 +255,7 @@ export default function Home() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ prompt }),
+          signal: abortController.signal, // Add abort signal
         });
         
         if (!response.ok) {
@@ -164,6 +264,11 @@ export default function Home() {
         }
         
         const data = await response.json();
+        
+        // Store job ID for potential cancellation
+        if (data.job_id) {
+          currentJobIdRef.current = data.job_id;
+        }
         
         setGeneratedUrls({
           image_url: data.image_url,
@@ -193,8 +298,20 @@ export default function Home() {
         
         resolve(data);
       } catch (error: any) {
+        // Don't show error if request was aborted
+        if (error.name === 'AbortError') {
+          console.log('Generate request was aborted');
+          return;
+        }
+        
         console.error('Error:', error);
         reject(error);
+      } finally {
+        // Clear the abort controller reference and job ID
+        if (generateAbortControllerRef.current === abortController) {
+          generateAbortControllerRef.current = null;
+        }
+        currentJobIdRef.current = null;
       }
     });
     
@@ -206,6 +323,9 @@ export default function Home() {
           : 'Generation complete!';
       },
       error: (err) => {
+        // Don't show error toast for aborted requests
+        if (err?.name === 'AbortError') return null;
+        
         if (err.message.includes('Python API is not running')) {
           return 'Server is not running. Please try again in a few minutes.';
         }
@@ -218,8 +338,11 @@ export default function Home() {
     
     try {
       await generatePromise;
-    } catch (error) {
-      // Error is handled by toast.promise
+    } catch (error: any) {
+      // Error is handled by toast.promise, but check if it was aborted
+      if (error?.name === 'AbortError') {
+        console.log('Generation was aborted by user');
+      }
     } finally {
       setIsGenerating(false);
     }

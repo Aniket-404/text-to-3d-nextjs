@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import uuid
+import threading
 from PIL import Image, ImageDraw
 import cloudinary
 import cloudinary.uploader
@@ -30,6 +32,66 @@ cloudinary.config(
 app = Flask(__name__)
 CORS(app)
 
+# Global dictionary to track active jobs and their cancellation status
+active_jobs = {}
+jobs_lock = threading.Lock()
+
+def create_job_id():
+    """Generate a unique job ID"""
+    return str(uuid.uuid4())
+
+def is_job_cancelled(job_id):
+    """Check if a job has been cancelled"""
+    with jobs_lock:
+        return active_jobs.get(job_id, {}).get('cancelled', False)
+
+def cancel_job(job_id):
+    """Cancel a job"""
+    with jobs_lock:
+        if job_id in active_jobs:
+            active_jobs[job_id]['cancelled'] = True
+            logger.info(f"Job {job_id} has been cancelled")
+            return True
+        return False
+
+def register_job(job_id):
+    """Register a new job"""
+    with jobs_lock:
+        active_jobs[job_id] = {'cancelled': False, 'created_at': time.time()}
+
+def cleanup_job(job_id):
+    """Clean up a completed job"""
+    with jobs_lock:
+        if job_id in active_jobs:
+            del active_jobs[job_id]
+
+def cleanup_old_jobs():
+    """Clean up jobs older than 30 minutes"""
+    current_time = time.time()
+    with jobs_lock:
+        jobs_to_remove = []
+        for job_id, job_data in active_jobs.items():
+            if current_time - job_data['created_at'] > 1800:  # 30 minutes
+                jobs_to_remove.append(job_id)
+        
+        for job_id in jobs_to_remove:
+            del active_jobs[job_id]
+            logger.info(f"Cleaned up old job: {job_id}")
+
+# Run cleanup every 5 minutes
+def periodic_cleanup():
+    import threading
+    def cleanup_worker():
+        while True:
+            time.sleep(300)  # 5 minutes
+            cleanup_old_jobs()
+    
+    cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
+    cleanup_thread.start()
+
+# Start periodic cleanup
+periodic_cleanup()
+
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
@@ -54,11 +116,24 @@ def generate():
     if not prompt:
         return jsonify({"error": "No prompt provided"}), 400
     
+    # Create a unique job ID
+    job_id = create_job_id()
+    register_job(job_id)
+    
     try:
-        logger.info(f"Processing prompt: {prompt}")
+        logger.info(f"Processing prompt: {prompt} (Job ID: {job_id})")
         
         # Generate image and process to 3D using the unified function from depth_map.py
-        result = process_image_to_3d(None, prompt=prompt, use_huggingface=True)
+        result = process_image_to_3d(None, prompt=prompt, use_huggingface=True, job_id=job_id)
+        
+        # Check if job was cancelled during processing
+        if is_job_cancelled(job_id):
+            logger.info(f"Job {job_id} was cancelled during processing")
+            return jsonify({
+                "error": "Request was cancelled",
+                "success": False,
+                "cancelled": True
+            }), 499  # Client Closed Request
         
         if not result["success"]:
             logger.error(f"Failed to process image: {result.get('error')}")
@@ -72,7 +147,8 @@ def generate():
             "image_url": result["generated_image_url"],  # URL of the generated image
             "model_url": result["model_url"],           # URL of the 3D model file
             "depth_map_url": result["depth_map_url"],   # URL of the depth map (optional)
-            "success": True
+            "success": True,
+            "job_id": job_id
         })
             
     except Exception as e:
@@ -81,6 +157,8 @@ def generate():
             "error": str(e),
             "success": False
         }), 500
+    finally:
+        cleanup_job(job_id)
 
 @app.route('/upload', methods=['POST'])
 def upload_image():
@@ -97,6 +175,10 @@ def upload_image():
     if not file.filename.lower().endswith(tuple(allowed_extensions)):
         return jsonify({"error": "Invalid file type. Please upload an image file."}), 400
     
+    # Create a unique job ID
+    job_id = create_job_id()
+    register_job(job_id)
+    
     try:
         # Save the uploaded file temporarily
         filename = secure_filename(file.filename)
@@ -105,7 +187,17 @@ def upload_image():
         temp_path = os.path.join(TEMP_DIR, temp_filename)
         file.save(temp_path)
         
-        logger.info(f"Uploaded file saved to: {temp_path}")
+        logger.info(f"Uploaded file saved to: {temp_path} (Job ID: {job_id})")
+        
+        # Check if job was cancelled early
+        if is_job_cancelled(job_id):
+            os.remove(temp_path)
+            logger.info(f"Job {job_id} was cancelled before processing")
+            return jsonify({
+                "error": "Request was cancelled",
+                "success": False,
+                "cancelled": True
+            }), 499
         
         # Upload to Cloudinary first
         upload_result = cloudinary.uploader.upload(
@@ -123,8 +215,26 @@ def upload_image():
         # Clean up temporary file
         os.remove(temp_path)
         
+        # Check if job was cancelled after upload
+        if is_job_cancelled(job_id):
+            logger.info(f"Job {job_id} was cancelled after Cloudinary upload")
+            return jsonify({
+                "error": "Request was cancelled",
+                "success": False,
+                "cancelled": True
+            }), 499
+        
         # Process the uploaded image to 3D (no prompt, so no image generation)
-        result = process_image_to_3d(cloudinary_url, prompt=None, use_huggingface=False)
+        result = process_image_to_3d(cloudinary_url, prompt=None, use_huggingface=False, job_id=job_id)
+        
+        # Check if job was cancelled during processing
+        if is_job_cancelled(job_id):
+            logger.info(f"Job {job_id} was cancelled during processing")
+            return jsonify({
+                "error": "Request was cancelled",
+                "success": False,
+                "cancelled": True
+            }), 499
         
         if not result["success"]:
             logger.error(f"Failed to process uploaded image: {result.get('error')}")
@@ -138,7 +248,8 @@ def upload_image():
             "image_url": cloudinary_url,                    # URL of the uploaded image
             "model_url": result["model_url"],               # URL of the 3D model file
             "depth_map_url": result.get("depth_map_url"),   # URL of the depth map (optional)
-            "success": True
+            "success": True,
+            "job_id": job_id
         })
         
     except Exception as e:
@@ -151,6 +262,25 @@ def upload_image():
             "error": str(e),
             "success": False
         }), 500
+    finally:
+        cleanup_job(job_id)
+
+@app.route('/cancel', methods=['POST'])
+def cancel_request():
+    """Cancel a running job"""
+    data = request.json
+    job_id = data.get('job_id')
+    
+    if not job_id:
+        return jsonify({"error": "No job_id provided"}), 400
+    
+    try:
+        if cancel_job(job_id):
+            return jsonify({"message": f"Job {job_id} cancelled successfully", "success": True})
+        else:
+            return jsonify({"error": f"Job {job_id} not found or already completed", "success": False}), 404
+    except Exception as e:
+        return jsonify({"error": f"Failed to cancel job: {str(e)}", "success": False}), 500
 
 @app.route('/delete', methods=['POST'])
 def delete_file():

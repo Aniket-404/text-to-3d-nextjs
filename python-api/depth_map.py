@@ -90,24 +90,54 @@ def download_image(image_url):
         logger.error(f"Error downloading image from {image_url}: {str(e)}")
         raise
 
-def generate_depth_map(image):
+def generate_depth_map(image, job_id=None):
     """Generate a depth map from an image using DPT model"""
     logger.info("Generating depth map using DPT")
     
+    # Function to check for cancellation
+    def check_cancellation():
+        if job_id:
+            try:
+                # Import here to avoid circular imports
+                from app import is_job_cancelled
+                if is_job_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled during depth map generation")
+                    return True
+            except ImportError:
+                # If we can't import, assume not cancelled
+                pass
+        return False
+    
     try:
+        # Check for cancellation at the start
+        if check_cancellation():
+            raise Exception("Job was cancelled during depth map generation")
+        
         # Get the current device
         device = next(model.parameters()).device
         logger.info(f"Using device: {device}")
+        
+        # Check for cancellation before preprocessing
+        if check_cancellation():
+            raise Exception("Job was cancelled during depth map generation")
         
         # Prepare image for the model
         inputs = processor(images=image, return_tensors="pt")
         # Move inputs to the same device as the model
         inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
         
+        # Check for cancellation before model inference
+        if check_cancellation():
+            raise Exception("Job was cancelled during depth map generation")
+        
         # Generate depth prediction
         with torch.no_grad():
             outputs = model(**inputs)
             predicted_depth = outputs.predicted_depth
+
+        # Check for cancellation before post-processing
+        if check_cancellation():
+            raise Exception("Job was cancelled during depth map generation")
 
         # Interpolate to original size
         prediction = torch.nn.functional.interpolate(
@@ -121,6 +151,10 @@ def generate_depth_map(image):
         output = prediction.squeeze().cpu().numpy()
         formatted = (output * 255 / np.max(output)).astype("uint8")
         depth = Image.fromarray(formatted)
+        
+        # Check for cancellation before saving
+        if check_cancellation():
+            raise Exception("Job was cancelled during depth map generation")
         
         # Save a visualization of the depth map and upload to Cloudinary
         timestamp = int(time.time())
@@ -162,9 +196,27 @@ def generate_depth_map(image):
         logger.error(f"Failed to generate depth map: {str(e)}")
         raise
 
-def create_point_cloud(image, depth_map, fx=1000, fy=1000):
+def create_point_cloud(image, depth_map, fx=1000, fy=1000, job_id=None):
     """Create a point cloud from an image and its depth map"""
     logger.info("Creating point cloud")
+    
+    # Function to check for cancellation
+    def check_cancellation():
+        if job_id:
+            try:
+                # Import here to avoid circular imports
+                from app import is_job_cancelled
+                if is_job_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled during point cloud creation")
+                    return True
+            except ImportError:
+                # If we can't import, assume not cancelled
+                pass
+        return False
+    
+    # Check for cancellation at the start
+    if check_cancellation():
+        raise Exception("Job was cancelled during point cloud creation")
     
     # Convert inputs to numpy arrays
     depth_array = np.array(depth_map)
@@ -181,16 +233,28 @@ def create_point_cloud(image, depth_map, fx=1000, fy=1000):
     point_cloud = []
     colors = []
     
+    total_pixels = depth_array.shape[0] * depth_array.shape[1]
+    processed_pixels = 0
+    
     # Loop through each pixel
     for v in range(depth_array.shape[0]):
         for u in range(depth_array.shape[1]):
+            # Check for cancellation periodically (every 10000 pixels)
+            if processed_pixels % 10000 == 0 and check_cancellation():
+                raise Exception("Job was cancelled during point cloud creation")
+            
             Z = depth_array[v, u]  # Depth value
             X = (u - cx) * Z / fx
             Y = (v - cy) * Z / fy
             point_cloud.append([X, Y, Z])
             colors.append(color_array[v, u])
+            processed_pixels += 1
     
     logger.info(f"Generated point cloud with {len(point_cloud)} points")
+    
+    # Check for cancellation before final processing
+    if check_cancellation():
+        raise Exception("Job was cancelled during point cloud creation")
     
     # Convert to numpy arrays and normalize colors
     points = np.array(point_cloud)
@@ -198,9 +262,27 @@ def create_point_cloud(image, depth_map, fx=1000, fy=1000):
     
     return points, colors
 
-def create_obj_file(point_cloud, colors):
+def create_obj_file(point_cloud, colors, job_id=None):
     """Create an OBJ file from point cloud data, ensuring file size is under 10MB"""
     logger.info("Creating OBJ file")
+    
+    # Function to check for cancellation
+    def check_cancellation():
+        if job_id:
+            try:
+                # Import here to avoid circular imports
+                from app import is_job_cancelled
+                if is_job_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled during OBJ file creation")
+                    return True
+            except ImportError:
+                # If we can't import, assume not cancelled
+                pass
+        return False
+    
+    # Check for cancellation at the start
+    if check_cancellation():
+        raise Exception("Job was cancelled during OBJ file creation")
     
     def check_file_size(filepath):
         """Check if file size is under 10MB"""
@@ -216,6 +298,10 @@ def create_obj_file(point_cloud, colors):
     logger.info(f"Initial point cloud size: {len(point_cloud)} points")
     target_points = 50000  # Target 50k points for good balance
     if len(point_cloud) > target_points:
+        # Check for cancellation before downsampling
+        if check_cancellation():
+            raise Exception("Job was cancelled during OBJ file creation")
+        
         # Calculate voxel size to achieve target point count
         # Assuming uniform distribution, cube root of ratio gives approximate voxel size
         ratio = (len(point_cloud) / target_points) ** (1/3)
@@ -223,10 +309,19 @@ def create_obj_file(point_cloud, colors):
         pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
         logger.info(f"Downsampled to {len(pcd.points)} points using voxel size {voxel_size:.3f}")
     
+    # Check for cancellation before mesh creation
+    if check_cancellation():
+        raise Exception("Job was cancelled during OBJ file creation")
+    
     # Create a mesh from the point cloud
     try:
         # Estimate normals with optimized parameters
         logger.info("Starting normal estimation...")
+        
+        # Check for cancellation before normal estimation
+        if check_cancellation():
+            raise Exception("Job was cancelled during OBJ file creation")
+        
         # Use optimized parameters for faster normal estimation
         pcd.estimate_normals(
             search_param=o3d.geometry.KDTreeSearchParamHybrid(
@@ -235,6 +330,10 @@ def create_obj_file(point_cloud, colors):
             )
         )
         logger.info("Basic normal estimation complete, orienting normals...")
+        
+        # Check for cancellation before normal orientation
+        if check_cancellation():
+            raise Exception("Job was cancelled during OBJ file creation")
         
         # Faster normal orientation with fewer neighbors
         pcd.orient_normals_consistent_tangent_plane(k=10)
@@ -249,6 +348,10 @@ def create_obj_file(point_cloud, colors):
         attempt = 0
         
         while attempt < max_attempts:
+            # Check for cancellation before each attempt
+            if check_cancellation():
+                raise Exception("Job was cancelled during OBJ file creation")
+            
             # Downsample point cloud if needed
             working_pcd = pcd
             if points_percent < 1.0:
@@ -258,6 +361,11 @@ def create_obj_file(point_cloud, colors):
                 logger.info(f"Downsampled point cloud to {points_percent*100}% ({len(np.asarray(working_pcd.points))} points)")
               # Create mesh using optimized Poisson reconstruction
             logger.info(f"Creating mesh using Poisson reconstruction (depth={depth})...")
+            
+            # Check for cancellation before Poisson reconstruction
+            if check_cancellation():
+                raise Exception("Job was cancelled during OBJ file creation")
+            
             mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
                 working_pcd, 
                 depth=depth,
@@ -266,11 +374,19 @@ def create_obj_file(point_cloud, colors):
                 linear_fit=True
             )
             
+            # Check for cancellation before mesh cleanup
+            if check_cancellation():
+                raise Exception("Job was cancelled during OBJ file creation")
+            
             # Clean up the mesh
             logger.info("Cleaning up mesh...")
             # More aggressive noise removal
             vertices_to_remove = densities < np.quantile(densities, 0.15)  # Remove more low-density vertices
             mesh.remove_vertices_by_mask(vertices_to_remove)
+            
+            # Check for cancellation before mesh optimization
+            if check_cancellation():
+                raise Exception("Job was cancelled during OBJ file creation")
             
             # Optimize the mesh
             if len(np.asarray(mesh.vertices)) > target_points:
@@ -281,6 +397,10 @@ def create_obj_file(point_cloud, colors):
             # Optimize mesh
             mesh.compute_vertex_normals()
             mesh.compute_triangle_normals()
+            
+            # Check for cancellation before writing file
+            if check_cancellation():
+                raise Exception("Job was cancelled during OBJ file creation")
             
             # Create temporary file for the mesh in the project's temp directory
             temp_obj_path = os.path.join("temp", f"mesh_{int(time.time())}.obj")
@@ -527,35 +647,68 @@ def generate_image(prompt, use_huggingface=True, use_github=False):
     logger.error("All image generation methods failed")
     return None
 
-def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
+def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=None):
     """Process an image to create a 3D model
     
     Args:
         image_url: URL of the image to process (Cloudinary URL)
         prompt: Optional text prompt to generate a new image
         use_huggingface: Whether to use Hugging Face API for image generation (default: True)
+        job_id: Optional job ID to check for cancellation
     
     Returns:
         dict: Contains URLs for the image and 3D model, and a success flag
     """
-    logger.info(f"Processing image to 3D from URL: {image_url}")
+    logger.info(f"Processing image to 3D from URL: {image_url} (Job ID: {job_id})")
+    
+    # Function to check for cancellation
+    def check_cancellation():
+        if job_id:
+            try:
+                # Import here to avoid circular imports
+                from app import is_job_cancelled
+                if is_job_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled, stopping processing")
+                    return True
+            except ImportError:
+                # If we can't import, assume not cancelled
+                pass
+        return False
     
     try:
+        # Check for cancellation at the start
+        if check_cancellation():
+            return {"error": "Job was cancelled", "success": False, "cancelled": True}
+        
         # If prompt is provided, generate a new image
         image = None
         generated_image_url = None
         
         if prompt:
             logger.info(f"Generating new image for prompt: {prompt}")
+            
+            # Check for cancellation before image generation
+            if check_cancellation():
+                return {"error": "Job was cancelled", "success": False, "cancelled": True}
+            
             image = generate_image(prompt, use_huggingface=use_huggingface)
             if not image:
                 logger.warning("Hugging Face/Gemini image generation failed, trying GitHub OpenAI proxy...")
+                
+                # Check for cancellation before retry
+                if check_cancellation():
+                    return {"error": "Job was cancelled", "success": False, "cancelled": True}
+                
                 image = generate_image(prompt, use_huggingface=False, use_github=True)
             if not image:
                 logger.error("Image generation failed")
                 return {"error": "Failed to generate image", "success": False}
             
             logger.info("Successfully generated image, uploading to Cloudinary")
+            
+            # Check for cancellation before uploading
+            if check_cancellation():
+                return {"error": "Job was cancelled", "success": False, "cancelled": True}
             
             # Upload the generated image to Cloudinary
             timestamp = int(time.time())
@@ -591,6 +744,10 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
         else:
             logger.info("No prompt provided, using the original image URL")
         
+        # Check for cancellation before downloading
+        if check_cancellation():
+            return {"error": "Job was cancelled", "success": False, "cancelled": True}
+        
         # Download image from Cloudinary if we don't already have it
         if not image:
             image = download_image(image_url)
@@ -604,23 +761,43 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True):
         if not base_path:
             base_path = f"image_{int(time.time())}"
             
+        # Check for cancellation before depth map generation
+        if check_cancellation():
+            return {"error": "Job was cancelled", "success": False, "cancelled": True}
+            
         # Generate depth map and create point cloud
         logger.info("Generating depth map...")
         # Set filename attribute for consistent naming
         image.filename = base_path
-        depth_map = generate_depth_map(image)
+        depth_map = generate_depth_map(image, job_id=job_id)
         depth_map_url = getattr(depth_map, 'cloudinary_url', None)  # Get the Cloudinary URL if available
         
+        # Check for cancellation before point cloud creation
+        if check_cancellation():
+            return {"error": "Job was cancelled", "success": False, "cancelled": True}
+        
         logger.info("Creating point cloud...")
-        points, colors = create_point_cloud(image, depth_map)
+        points, colors = create_point_cloud(image, depth_map, job_id=job_id)
+        
+        # Check for cancellation before OBJ file creation
+        if check_cancellation():
+            return {"error": "Job was cancelled", "success": False, "cancelled": True}
+        
         logger.info("Creating OBJ file...")
-        obj_file_path = create_obj_file(points, colors)
+        obj_file_path = create_obj_file(points, colors, job_id=job_id)
         
         # Extract Cloudinary path from image URL for consistent naming
         cloudinary_path = extract_cloudinary_path_from_url(image_url)
         timestamp = int(time.time())
         base_path = cloudinary_path.split('/')[-1]          # Create public IDs for uploads using the text-to-3d-web/models folder
         model_public_id = f"text-to-3d-web/models/{base_path}_{timestamp}"
+        
+        # Check for cancellation before uploading model
+        if check_cancellation():
+            # Clean up temporary file before returning
+            if os.path.exists(obj_file_path):
+                os.unlink(obj_file_path)
+            return {"error": "Job was cancelled", "success": False, "cancelled": True}
         
         # Upload OBJ file to models folder
         logger.info(f"Uploading 3D model to Cloudinary as {model_public_id}")
