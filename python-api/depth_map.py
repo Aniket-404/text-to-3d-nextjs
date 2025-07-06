@@ -60,22 +60,13 @@ def download_image(image_url):
     try:
         # Special handling for Cloudinary URLs to ensure best quality
         if "cloudinary.com" in image_url:
-            # Remove any transformation parameters and request original quality
+            # For Cloudinary URLs, just add quality optimization parameters
             parsed_url = urlparse(image_url)
-            path_parts = parsed_url.path.split('/')
-            
-            # Rebuild the URL without transformation parameters
-            # Format: https://res.cloudinary.com/cloud_name/image/upload/v1234567890/path/to/image.jpg
-            filtered_parts = []
-            upload_found = False
-            for part in path_parts:
-                if upload_found or part == "upload":
-                    upload_found = True
-                    filtered_parts.append(part)
-            
-            # Reconstruct the URL with original quality parameters
-            new_path = '/'.join(filtered_parts)
-            clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}/{new_path}?fl_attachment=true"
+            # Add fl_attachment=true to ensure we get the original file
+            if parsed_url.query:
+                clean_url = f"{image_url}&fl_attachment=true"
+            else:
+                clean_url = f"{image_url}?fl_attachment=true"
             logger.info(f"Optimized Cloudinary URL: {clean_url}")
             response = requests.get(clean_url, timeout=30)
         else:

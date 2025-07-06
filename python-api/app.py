@@ -8,6 +8,7 @@ import logging
 import torch
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 from depth_map import process_image_to_3d, generate_image
 
 # Initialize logging
@@ -81,6 +82,76 @@ def generate():
             "success": False
         }), 500
 
+@app.route('/upload', methods=['POST'])
+def upload_image():
+    """Upload an image and convert it to 3D model"""
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    
+    # Validate file type
+    allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'}
+    if not file.filename.lower().endswith(tuple(allowed_extensions)):
+        return jsonify({"error": "Invalid file type. Please upload an image file."}), 400
+    
+    try:
+        # Save the uploaded file temporarily
+        filename = secure_filename(file.filename)
+        timestamp = int(time.time())
+        temp_filename = f"upload_{timestamp}_{filename}"
+        temp_path = os.path.join(TEMP_DIR, temp_filename)
+        file.save(temp_path)
+        
+        logger.info(f"Uploaded file saved to: {temp_path}")
+        
+        # Upload to Cloudinary first
+        upload_result = cloudinary.uploader.upload(
+            temp_path,
+            public_id=f"text-to-3d-web/uploads/{filename}_{timestamp}",
+            resource_type="image",
+            unique_filename=True,
+            overwrite=True,
+            quality="auto"
+        )
+        
+        cloudinary_url = upload_result["secure_url"]
+        logger.info(f"Uploaded to Cloudinary: {cloudinary_url}")
+        
+        # Clean up temporary file
+        os.remove(temp_path)
+        
+        # Process the uploaded image to 3D (no prompt, so no image generation)
+        result = process_image_to_3d(cloudinary_url, prompt=None, use_huggingface=False)
+        
+        if not result["success"]:
+            logger.error(f"Failed to process uploaded image: {result.get('error')}")
+            return jsonify({
+                "error": result.get('error', "Failed to process uploaded image"),
+                "success": False
+            }), 500
+        
+        # Return URLs for both the uploaded image and 3D model
+        return jsonify({
+            "image_url": cloudinary_url,                    # URL of the uploaded image
+            "model_url": result["model_url"],               # URL of the 3D model file
+            "depth_map_url": result.get("depth_map_url"),   # URL of the depth map (optional)
+            "success": True
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to process uploaded image: {str(e)}", exc_info=True)
+        # Clean up temporary file if it exists
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
+        
+        return jsonify({
+            "error": str(e),
+            "success": False
+        }), 500
+
 @app.route('/delete', methods=['POST'])
 def delete_file():
     data = request.json
@@ -94,6 +165,8 @@ def delete_file():
         return jsonify({"result": result})
     except Exception as e:
         return jsonify({"error": f"Failed to delete file: {str(e)}"}), 500
+
+
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True, use_reloader=False)
