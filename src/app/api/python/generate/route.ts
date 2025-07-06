@@ -5,7 +5,7 @@ export const maxDuration = 300; // Set max duration to 5 minutes
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { prompt } = body;
+    const { prompt, depth_model } = body;
     
     if (!prompt) {
       return NextResponse.json(
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, depth_model }),
         signal: request.signal, // Pass through the abort signal
       });
     

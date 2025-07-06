@@ -4,6 +4,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get('file') as File;
+    const depthModel = formData.get('depth_model') as string;
     
     if (!file) {
       return NextResponse.json(
@@ -33,6 +34,9 @@ export async function POST(request: NextRequest) {
     // Create FormData for the Python API
     const pythonFormData = new FormData();
     pythonFormData.append('file', file);
+    if (depthModel) {
+      pythonFormData.append('depth_model', depthModel);
+    }
 
     let jobId: string | null = null;
 

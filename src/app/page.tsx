@@ -27,6 +27,7 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadMessage, setUploadMessage] = useState('');
+  const [depthModel, setDepthModel] = useState<'intel' | 'apple'>('intel');
 
   // Refs to store abort controllers and job IDs for ongoing requests
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
@@ -153,6 +154,7 @@ export default function Home() {
       try {
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('depth_model', depthModel);
 
         const response = await fetch('/api/python/upload', {
           method: 'POST',
@@ -280,7 +282,7 @@ export default function Home() {
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, depth_model: depthModel }),
           signal: abortController.signal, // Add abort signal
         });
         
@@ -420,6 +422,28 @@ export default function Home() {
               </button>
             </div>
             
+            {/* Depth Model Selection */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Depth Estimation Model
+              </label>
+              <select
+                value={depthModel}
+                onChange={(e) => setDepthModel(e.target.value as 'intel' | 'apple')}
+                disabled={isGenerating || isUploading}
+                className="w-full p-3 rounded-lg input-gradient focus:outline-none text-text-primary bg-surface border border-white/10 focus:border-primary/50"
+              >
+                <option value="intel">Intel DPT BEIT Large 512</option>
+                <option value="apple">Apple DepthPro (Experimental)</option>
+              </select>
+              <p className="text-xs text-text-secondary mt-1">
+                {depthModel === 'intel' 
+                  ? 'Intel DPT BEIT Large 512 - Fast and reliable depth estimation'
+                  : 'Apple DepthPro - High-quality depth estimation (currently using Intel DPT as fallback)'
+                }
+              </p>
+            </div>
+            
             {/* Content based on mode */}
             {mode === 'text' ? (
               <div className="space-y-4">
@@ -491,101 +515,158 @@ export default function Home() {
               </h2>
               <p className="text-text-secondary text-sm mt-1">
                 {mode === 'text' 
-                  ? 'Your AI-generated image and 3D model will appear here'
-                  : 'Your uploaded image and converted 3D model will appear here'
+                  ? 'Your AI-generated image, depth map, and 3D model will appear here'
+                  : 'Your uploaded image, depth map, and converted 3D model will appear here'
                 }
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              {/* Image Preview */}
-              <div className="aspect-square rounded-lg overflow-hidden">
-                {generatedUrls.image_url ? (
-                  <div className="relative w-full h-full">
-                    <img 
-                      src={generatedUrls.image_url} 
-                      alt={mode === 'text' ? (prompt || 'Generated image') : 'Uploaded image'} 
-                      className="w-full h-full object-cover rounded-lg"
-                    />
-                    <div className="absolute bottom-2 left-2">
-                      <a
-                        href={generatedUrls.image_url}
-                        download={`3dify-image-${Date.now()}.png`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
-                      >
-                        <FaDownload />
-                        <span>Download Image</span>
-                      </a>
+            <div className="space-y-6">
+              {/* Top Row: Image and Depth Map side by side */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Image Preview */}
+                <div className="aspect-square rounded-lg overflow-hidden">
+                  {generatedUrls.image_url ? (
+                    <div className="relative w-full h-full">
+                      <img 
+                        src={generatedUrls.image_url} 
+                        alt={mode === 'text' ? (prompt || 'Generated image') : 'Uploaded image'} 
+                        className="w-full h-full object-cover rounded-lg"
+                      />
+                      <div className="absolute bottom-2 left-2">
+                        <a
+                          href={generatedUrls.image_url}
+                          download={`3dify-image-${Date.now()}.png`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
+                        >
+                          <FaDownload />
+                          <span>Download Image</span>
+                        </a>
+                      </div>
+                      <div className="absolute top-2 left-2 bg-black/70 text-white px-2 py-1 rounded text-xs">
+                        {mode === 'text' ? 'Generated Image' : 'Uploaded Image'}
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-black/40 rounded-lg">
-                    {(isGenerating || isUploading) ? (
-                      <div className="text-center">
-                        <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
-                          <FaMagic className="text-3xl animate-spin text-primary" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-black/40 rounded-lg">
+                      {(isGenerating || isUploading) ? (
+                        <div className="text-center">
+                          <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
+                            <FaMagic className="text-3xl animate-spin text-primary" />
+                          </div>
+                          <p>{mode === 'text' ? 'Creating your image...' : 'Processing your image...'}</p>
                         </div>
-                        <p>{mode === 'text' ? 'Creating your image...' : 'Processing your image...'}</p>
+                      ) : (
+                        <div className="text-center p-6">
+                          <p className="text-lg mb-2">
+                            {mode === 'text' ? 'Your generated image will appear here' : 'Your uploaded image will appear here'}
+                          </p>
+                          <p className="text-sm text-text-secondary">
+                            {mode === 'text' 
+                              ? 'Enter a prompt and click Generate to start'
+                              : 'Upload an image to start the conversion'
+                            }
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                
+                {/* Depth Map Preview */}
+                <div className="aspect-square rounded-lg overflow-hidden">
+                  {generatedUrls.depth_map_url ? (
+                    <div className="relative w-full h-full">
+                      <img 
+                        src={generatedUrls.depth_map_url} 
+                        alt="Depth map" 
+                        className="w-full h-full object-cover rounded-lg"
+                      />
+                      <div className="absolute bottom-2 left-2">
+                        <a
+                          href={generatedUrls.depth_map_url}
+                          download={`3dify-depth-${Date.now()}.png`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
+                        >
+                          <FaDownload />
+                          <span>Download Depth</span>
+                        </a>
                       </div>
-                    ) : (
-                      <div className="text-center p-6">
-                        <p className="text-lg mb-2">
-                          {mode === 'text' ? 'Your generated image will appear here' : 'Your uploaded image will appear here'}
-                        </p>
-                        <p className="text-sm text-text-secondary">
-                          {mode === 'text' 
-                            ? 'Enter a prompt and click Generate to start'
-                            : 'Upload an image to start the conversion'
-                          }
-                        </p>
+                      <div className="absolute top-2 left-2 bg-black/70 text-white px-2 py-1 rounded text-xs">
+                        {depthModel === 'intel' ? 'Intel DPT' : 'Apple DepthPro'}
                       </div>
-                    )}
-                  </div>
-                )}
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-black/40 rounded-lg">
+                      {(isGenerating || isUploading) ? (
+                        <div className="text-center">
+                          <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
+                            <FaMagic className="text-3xl animate-spin text-primary" />
+                          </div>
+                          <p>Generating depth map...</p>
+                        </div>
+                      ) : (
+                        <div className="text-center p-6">
+                          <p className="text-lg mb-2">Depth Map</p>
+                          <p className="text-sm text-text-secondary">
+                            The depth estimation will appear here
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
               
-              {/* 3D Model Download */}
-              <div className="aspect-square rounded-lg overflow-hidden flex flex-col items-center justify-center bg-black/10">
-                {generatedUrls.model_url ? (
-                  <>
-                    <div className="text-center mb-4">
-                      <span className="block text-lg font-semibold mb-2">3D Model (OBJ)</span>
-                      <span className="text-sm text-text-secondary">Download the generated 3D model</span>
+              {/* Bottom Row: 3D Model Download */}
+              <div className="flex justify-center">
+                <div className="w-full max-w-md">
+                  {generatedUrls.model_url ? (
+                    <div className="glass-panel p-6 text-center">
+                      <div className="inline-block p-4 rounded-full bg-primary/20 mb-4">
+                        <FaDownload className="text-3xl text-primary" />
+                      </div>
+                      <div className="mb-6">
+                        <span className="block text-lg font-semibold mb-2">3D Model Ready</span>
+                        <span className="text-sm text-text-secondary">OBJ format - Ready for download</span>
+                      </div>
+                      <a
+                        href={generatedUrls.model_url}
+                        download={`3dify-model-${Date.now()}.obj`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center space-x-2 bg-primary hover:bg-primary/90 text-black px-6 py-3 rounded-md transition-colors font-medium w-full"
+                      >
+                        <FaDownload />
+                        <span>Download 3D Model</span>
+                      </a>
                     </div>
-                    <a
-                      href={generatedUrls.model_url}
-                      download
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center space-x-2 bg-surface/80 hover:bg-surface px-3 py-2 rounded-md transition-colors"
-                    >
-                      <FaDownload />
-                      <span>Download 3D Model</span>
-                    </a>
-                  </>
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    {(isGenerating || isUploading) ? (
-                      <div className="text-center">
-                        <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
-                          <FaMagic className="text-3xl animate-spin text-primary" />
+                  ) : (
+                    <div className="glass-panel p-6 text-center">
+                      {(isGenerating || isUploading) ? (
+                        <div className="text-center">
+                          <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
+                            <FaMagic className="text-3xl animate-spin text-primary" />
+                          </div>
+                          <p>Creating 3D model...</p>
                         </div>
-                        <p>Creating 3D model...</p>
-                      </div>
-                    ) : (
-                      <div className="text-center p-6">
-                        <p className="text-lg mb-2">3D model will appear here</p>
-                        <p className="text-sm text-text-secondary">
-                          {mode === 'text' 
-                            ? 'Enter a prompt and click Generate to start'
-                            : 'Upload an image to start the conversion'
-                          }
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
+                      ) : (
+                        <div className="text-center">
+                          <p className="text-lg mb-2">3D model will appear here</p>
+                          <p className="text-sm text-text-secondary">
+                            {mode === 'text' 
+                              ? 'Enter a prompt and click Generate to start'
+                              : 'Upload an image to start the conversion'
+                            }
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

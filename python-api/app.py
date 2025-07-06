@@ -144,6 +144,8 @@ def index():
 def generate():
     """Generate an image from a text prompt and create its 3D model"""
     prompt = request.json.get('prompt')
+    depth_model = request.json.get('depth_model', 'intel')  # Default to intel if not specified
+    
     if not prompt:
         return jsonify({"error": "No prompt provided"}), 400
     
@@ -156,7 +158,7 @@ def generate():
         update_job_progress(job_id, 'starting', 5, 'Starting image generation...')
         
         # Generate image and process to 3D using the unified function from depth_map.py
-        result = process_image_to_3d(None, prompt=prompt, use_huggingface=True, job_id=job_id)
+        result = process_image_to_3d(None, prompt=prompt, use_huggingface=True, job_id=job_id, depth_model=depth_model)
         
         # Check if job was cancelled during processing
         if is_job_cancelled(job_id):
@@ -212,6 +214,8 @@ def upload_image():
         return jsonify({"error": "No file provided"}), 400
     
     file = request.files['file']
+    depth_model = request.form.get('depth_model', 'intel')  # Default to intel if not specified
+    
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
     
@@ -272,7 +276,7 @@ def upload_image():
             }), 499
         
         # Process the uploaded image to 3D (no prompt, so no image generation)
-        result = process_image_to_3d(cloudinary_url, prompt=None, use_huggingface=False, job_id=job_id)
+        result = process_image_to_3d(cloudinary_url, prompt=None, use_huggingface=False, job_id=job_id, depth_model=depth_model)
         
         # Check if job was cancelled during processing
         if is_job_cancelled(job_id):

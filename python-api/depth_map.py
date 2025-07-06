@@ -41,17 +41,28 @@ cloudinary.config(
     api_secret=os.environ.get("CLOUDINARY_API_SECRET")
 )
 
-# Initialize the DPT model and processor with CUDA if available
+# Initialize the depth estimation models and processors with CUDA if available
 try:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    processor = DPTImageProcessor.from_pretrained("Intel/dpt-beit-large-512")
-    model = DPTForDepthEstimation.from_pretrained("Intel/dpt-beit-large-512").to(device)
+    
+    # Initialize Intel DPT model
+    intel_processor = DPTImageProcessor.from_pretrained("Intel/dpt-beit-large-512")
+    intel_model = DPTForDepthEstimation.from_pretrained("Intel/dpt-beit-large-512").to(device)
+    
+    # For Apple DepthPro, we'll keep it as Intel DPT for now since the direct conversion has issues
+    # TODO: Implement proper Apple DepthPro integration with their official implementation
+    apple_processor = intel_processor  # Use Intel processor as fallback
+    apple_model = intel_model  # Use Intel model as fallback
+    
+    logger.info("Successfully initialized Intel DPT model")
+    logger.info("Apple DepthPro will use Intel DPT as fallback for now")
+    
     if device.type == "cuda":
-        logger.info(f"Successfully initialized DPT model on GPU: {torch.cuda.get_device_name(0)}")
+        logger.info(f"Successfully initialized depth models on GPU: {torch.cuda.get_device_name(0)}")
     else:
-        logger.info("GPU not available, initialized DPT model on CPU")
+        logger.info("GPU not available, initialized depth models on CPU")
 except Exception as e:
-    logger.error(f"Failed to initialize DPT model: {str(e)}")
+    logger.error(f"Failed to initialize depth models: {str(e)}")
     raise
 
 def download_image(image_url):
@@ -90,9 +101,9 @@ def download_image(image_url):
         logger.error(f"Error downloading image from {image_url}: {str(e)}")
         raise
 
-def generate_depth_map(image, job_id=None):
-    """Generate a depth map from an image using DPT model"""
-    logger.info("Generating depth map using DPT")
+def generate_depth_map(image, job_id=None, depth_model='intel'):
+    """Generate a depth map from an image using specified depth model"""
+    logger.info(f"Generating depth map using {depth_model.upper()} model")
     
     # Function to check for cancellation
     def check_cancellation():
@@ -113,8 +124,18 @@ def generate_depth_map(image, job_id=None):
         if check_cancellation():
             raise Exception("Job was cancelled during depth map generation")
         
+        # Select the appropriate model and processor
+        if depth_model == 'apple' and apple_model is not None:
+            current_processor = apple_processor
+            current_model = apple_model
+            logger.info("Using Apple DepthPro model (currently falling back to Intel DPT)")
+        else:
+            current_processor = intel_processor
+            current_model = intel_model
+            logger.info("Using Intel DPT model")
+        
         # Get the current device
-        device = next(model.parameters()).device
+        device = next(current_model.parameters()).device
         logger.info(f"Using device: {device}")
         
         # Check for cancellation before preprocessing
@@ -122,7 +143,7 @@ def generate_depth_map(image, job_id=None):
             raise Exception("Job was cancelled during depth map generation")
         
         # Prepare image for the model
-        inputs = processor(images=image, return_tensors="pt")
+        inputs = current_processor(images=image, return_tensors="pt")
         # Move inputs to the same device as the model
         inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
         
@@ -132,7 +153,7 @@ def generate_depth_map(image, job_id=None):
         
         # Generate depth prediction
         with torch.no_grad():
-            outputs = model(**inputs)
+            outputs = current_model(**inputs)
             predicted_depth = outputs.predicted_depth
 
         # Check for cancellation before post-processing
@@ -647,7 +668,7 @@ def generate_image(prompt, use_huggingface=True, use_github=False):
     logger.error("All image generation methods failed")
     return None
 
-def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=None):
+def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=None, depth_model='intel'):
     """Process an image to create a 3D model
     
     Args:
@@ -655,6 +676,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
         prompt: Optional text prompt to generate a new image
         use_huggingface: Whether to use Hugging Face API for image generation (default: True)
         job_id: Optional job ID to check for cancellation
+        depth_model: Depth estimation model to use ('intel' or 'apple', default: 'intel')
     
     Returns:
         dict: Contains URLs for the image and 3D model, and a success flag
@@ -783,7 +805,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
         update_progress('generating_depth', 40, 'Generating depth map from image...')
         # Set filename attribute for consistent naming
         image.filename = base_path
-        depth_map = generate_depth_map(image, job_id=job_id)
+        depth_map = generate_depth_map(image, job_id=job_id, depth_model=depth_model)
         depth_map_url = getattr(depth_map, 'cloudinary_url', None)  # Get the Cloudinary URL if available
         
         # Check for cancellation before point cloud creation
