@@ -8,7 +8,7 @@ import cloudinary
 import cloudinary.uploader
 import logging
 import torch
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from depth_map import process_image_to_3d, generate_image
@@ -36,6 +36,10 @@ CORS(app)
 active_jobs = {}
 jobs_lock = threading.Lock()
 
+# Global dictionary to track job progress
+job_progress = {}
+progress_lock = threading.Lock()
+
 def create_job_id():
     """Generate a unique job ID"""
     return str(uuid.uuid4())
@@ -58,12 +62,34 @@ def register_job(job_id):
     """Register a new job"""
     with jobs_lock:
         active_jobs[job_id] = {'cancelled': False, 'created_at': time.time()}
+    with progress_lock:
+        job_progress[job_id] = {'stage': 'starting', 'progress': 0, 'message': 'Initializing...'}
+
+def update_job_progress(job_id, stage, progress, message):
+    """Update job progress"""
+    with progress_lock:
+        if job_id in job_progress:
+            job_progress[job_id] = {
+                'stage': stage,
+                'progress': progress,
+                'message': message,
+                'timestamp': time.time()
+            }
+            logger.info(f"Job {job_id} progress: {stage} - {progress}% - {message}")
+
+def get_job_progress(job_id):
+    """Get current job progress"""
+    with progress_lock:
+        return job_progress.get(job_id, {'stage': 'unknown', 'progress': 0, 'message': 'Not found'})
 
 def cleanup_job(job_id):
     """Clean up a completed job"""
     with jobs_lock:
         if job_id in active_jobs:
             del active_jobs[job_id]
+    with progress_lock:
+        if job_id in job_progress:
+            del job_progress[job_id]
 
 def cleanup_old_jobs():
     """Clean up jobs older than 30 minutes"""
@@ -77,6 +103,11 @@ def cleanup_old_jobs():
         for job_id in jobs_to_remove:
             del active_jobs[job_id]
             logger.info(f"Cleaned up old job: {job_id}")
+    
+    with progress_lock:
+        for job_id in jobs_to_remove:
+            if job_id in job_progress:
+                del job_progress[job_id]
 
 # Run cleanup every 5 minutes
 def periodic_cleanup():
@@ -122,6 +153,7 @@ def generate():
     
     try:
         logger.info(f"Processing prompt: {prompt} (Job ID: {job_id})")
+        update_job_progress(job_id, 'starting', 5, 'Starting image generation...')
         
         # Generate image and process to 3D using the unified function from depth_map.py
         result = process_image_to_3d(None, prompt=prompt, use_huggingface=True, job_id=job_id)
@@ -137,10 +169,13 @@ def generate():
         
         if not result["success"]:
             logger.error(f"Failed to process image: {result.get('error')}")
+            update_job_progress(job_id, 'error', 0, f"Error: {result.get('error')}")
             return jsonify({
                 "error": result.get('error', "Failed to process image"),
                 "success": False
             }), 500
+        
+        update_job_progress(job_id, 'completed', 100, 'Generation completed successfully!')
         
         # Return URLs for both the generated image and 3D model
         return jsonify({
@@ -153,12 +188,22 @@ def generate():
             
     except Exception as e:
         logger.error(f"Failed to process request: {str(e)}", exc_info=True)
+        update_job_progress(job_id, 'error', 0, f"Error: {str(e)}")
         return jsonify({
             "error": str(e),
             "success": False
         }), 500
     finally:
         cleanup_job(job_id)
+
+@app.route('/progress/<job_id>', methods=['GET'])
+def get_progress(job_id):
+    """Get the progress of a job"""
+    try:
+        progress = get_job_progress(job_id)
+        return jsonify(progress)
+    except Exception as e:
+        return jsonify({"error": f"Failed to get progress: {str(e)}"}), 500
 
 @app.route('/upload', methods=['POST'])
 def upload_image():
@@ -188,6 +233,7 @@ def upload_image():
         file.save(temp_path)
         
         logger.info(f"Uploaded file saved to: {temp_path} (Job ID: {job_id})")
+        update_job_progress(job_id, 'uploading', 10, 'Uploading image to cloud...')
         
         # Check if job was cancelled early
         if is_job_cancelled(job_id):
@@ -211,6 +257,7 @@ def upload_image():
         
         cloudinary_url = upload_result["secure_url"]
         logger.info(f"Uploaded to Cloudinary: {cloudinary_url}")
+        update_job_progress(job_id, 'uploaded', 20, 'Image uploaded, starting 3D conversion...')
         
         # Clean up temporary file
         os.remove(temp_path)
@@ -238,10 +285,13 @@ def upload_image():
         
         if not result["success"]:
             logger.error(f"Failed to process uploaded image: {result.get('error')}")
+            update_job_progress(job_id, 'error', 0, f"Error: {result.get('error')}")
             return jsonify({
                 "error": result.get('error', "Failed to process uploaded image"),
                 "success": False
             }), 500
+        
+        update_job_progress(job_id, 'completed', 100, 'Upload and conversion completed successfully!')
         
         # Return URLs for both the uploaded image and 3D model
         return jsonify({
@@ -254,6 +304,7 @@ def upload_image():
         
     except Exception as e:
         logger.error(f"Failed to process uploaded image: {str(e)}", exc_info=True)
+        update_job_progress(job_id, 'error', 0, f"Error: {str(e)}")
         # Clean up temporary file if it exists
         if 'temp_path' in locals() and os.path.exists(temp_path):
             os.remove(temp_path)

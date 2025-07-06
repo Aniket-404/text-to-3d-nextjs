@@ -23,15 +23,60 @@ export default function Home() {
     depth_map_url: null
   });
   const [generationStep, setGenerationStep] = useState(0);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [generationMessage, setGenerationMessage] = useState('');
   const [mode, setMode] = useState<GenerationMode>('text');
   const [uploadedImageUrl, setUploadedImageUrl] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadMessage, setUploadMessage] = useState('');
   const { user } = useAuth();
 
   // Refs to store abort controllers and job IDs for ongoing requests
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const generateAbortControllerRef = useRef<AbortController | null>(null);
   const currentJobIdRef = useRef<string | null>(null);
+  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Function to start progress tracking
+  const startProgressTracking = (jobId: string, isUpload: boolean = false) => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+    
+    progressIntervalRef.current = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/python/progress/${jobId}`);
+        if (response.ok) {
+          const progressData = await response.json();
+          
+          if (isUpload) {
+            setUploadProgress(progressData.progress || 0);
+            setUploadMessage(progressData.message || '');
+          } else {
+            setGenerationProgress(progressData.progress || 0);
+            setGenerationMessage(progressData.message || '');
+          }
+          
+          // Stop tracking when completed or error
+          if (progressData.stage === 'completed' || progressData.stage === 'error') {
+            clearInterval(progressIntervalRef.current!);
+            progressIntervalRef.current = null;
+          }
+        }
+      } catch (error) {
+        console.error('Progress tracking error:', error);
+      }
+    }, 500); // Update every 500ms
+  };
+
+  // Function to stop progress tracking
+  const stopProgressTracking = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+  };
 
   // Function to cancel a backend job
   const cancelBackendJob = async (jobId: string) => {
@@ -65,6 +110,9 @@ export default function Home() {
       cancelBackendJob(currentJobIdRef.current);
       currentJobIdRef.current = null;
     }
+    
+    // Stop progress tracking
+    stopProgressTracking();
   };
 
   // Effect to handle page unload/refresh
@@ -123,9 +171,10 @@ export default function Home() {
 
         const data = await response.json();
         
-        // Store job ID for potential cancellation
+        // Store job ID for potential cancellation and start progress tracking
         if (data.job_id) {
           currentJobIdRef.current = data.job_id;
+          startProgressTracking(data.job_id, true);
         }
         
         // Update with server URLs (replace the local file URL)
@@ -208,6 +257,7 @@ export default function Home() {
       }
     } finally {
       setIsUploading(false);
+      stopProgressTracking();
     }
   };
 
@@ -265,9 +315,10 @@ export default function Home() {
         
         const data = await response.json();
         
-        // Store job ID for potential cancellation
+        // Store job ID for potential cancellation and start progress tracking
         if (data.job_id) {
           currentJobIdRef.current = data.job_id;
+          startProgressTracking(data.job_id, false);
         }
         
         setGeneratedUrls({
@@ -345,6 +396,7 @@ export default function Home() {
       }
     } finally {
       setIsGenerating(false);
+      stopProgressTracking();
     }
   };
 
@@ -458,14 +510,11 @@ export default function Home() {
                     <div className="w-full bg-surface/30 h-2 rounded-full overflow-hidden">
                       <div 
                         className="h-full bg-primary transition-all duration-300"
-                        style={{ width: `${(generationStep / 4) * 100}%` }}
+                        style={{ width: `${generationProgress}%` }}
                       />
                     </div>
                     <div className="text-sm text-text-secondary mt-2">
-                      {generationStep === 1 && 'Creating image from text...'}
-                      {generationStep === 2 && 'Generating depth map...'}
-                      {generationStep === 3 && 'Converting to 3D model...'}
-                      {generationStep === 4 && 'Finalizing your model...'}
+                      {generationMessage || 'Generating your 3D model...'}
                     </div>
                   </div>
                 )}
@@ -482,10 +531,13 @@ export default function Home() {
                 {isUploading && (
                   <div className="mt-4">
                     <div className="w-full bg-surface/30 h-2 rounded-full overflow-hidden">
-                      <div className="h-full bg-primary transition-all duration-300 w-full animate-pulse" />
+                      <div 
+                        className="h-full bg-primary transition-all duration-300"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
                     </div>
                     <div className="text-sm text-text-secondary mt-2">
-                      Uploading and converting to 3D model...
+                      {uploadMessage || 'Uploading and converting to 3D model...'}
                     </div>
                   </div>
                 )}

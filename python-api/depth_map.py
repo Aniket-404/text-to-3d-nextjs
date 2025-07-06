@@ -675,6 +675,15 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
                 pass
         return False
     
+    # Function to update progress
+    def update_progress(stage, progress, message):
+        if job_id:
+            try:
+                from app import update_job_progress
+                update_job_progress(job_id, stage, progress, message)
+            except ImportError:
+                pass
+    
     try:
         # Check for cancellation at the start
         if check_cancellation():
@@ -686,6 +695,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
         
         if prompt:
             logger.info(f"Generating new image for prompt: {prompt}")
+            update_progress('generating_image', 10, 'Generating image from text prompt...')
             
             # Check for cancellation before image generation
             if check_cancellation():
@@ -694,6 +704,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
             image = generate_image(prompt, use_huggingface=use_huggingface)
             if not image:
                 logger.warning("Hugging Face/Gemini image generation failed, trying GitHub OpenAI proxy...")
+                update_progress('generating_image', 15, 'Retrying image generation with fallback...')
                 
                 # Check for cancellation before retry
                 if check_cancellation():
@@ -705,6 +716,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
                 return {"error": "Failed to generate image", "success": False}
             
             logger.info("Successfully generated image, uploading to Cloudinary")
+            update_progress('uploading_image', 25, 'Uploading generated image to cloud...')
             
             # Check for cancellation before uploading
             if check_cancellation():
@@ -750,6 +762,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
         
         # Download image from Cloudinary if we don't already have it
         if not image:
+            update_progress('downloading_image', 35, 'Downloading image for processing...')
             image = download_image(image_url)
           # Get base name for consistent file naming
         base_path = None
@@ -767,6 +780,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
             
         # Generate depth map and create point cloud
         logger.info("Generating depth map...")
+        update_progress('generating_depth', 40, 'Generating depth map from image...')
         # Set filename attribute for consistent naming
         image.filename = base_path
         depth_map = generate_depth_map(image, job_id=job_id)
@@ -777,6 +791,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
             return {"error": "Job was cancelled", "success": False, "cancelled": True}
         
         logger.info("Creating point cloud...")
+        update_progress('creating_pointcloud', 60, 'Creating 3D point cloud...')
         points, colors = create_point_cloud(image, depth_map, job_id=job_id)
         
         # Check for cancellation before OBJ file creation
@@ -784,6 +799,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
             return {"error": "Job was cancelled", "success": False, "cancelled": True}
         
         logger.info("Creating OBJ file...")
+        update_progress('creating_mesh', 75, 'Creating 3D mesh and optimizing...')
         obj_file_path = create_obj_file(points, colors, job_id=job_id)
         
         # Extract Cloudinary path from image URL for consistent naming
@@ -801,6 +817,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
         
         # Upload OBJ file to models folder
         logger.info(f"Uploading 3D model to Cloudinary as {model_public_id}")
+        update_progress('uploading_model', 90, 'Uploading 3D model to cloud...')
         obj_response = cloudinary.uploader.upload(
             obj_file_path,
             public_id=model_public_id,
@@ -811,6 +828,8 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
         
         # Clean up temporary files
         os.unlink(obj_file_path)
+        
+        update_progress('completed', 100, 'Generation completed successfully!')
         
         # Prepare result with all URLs
         result = {
