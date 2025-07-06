@@ -29,12 +29,16 @@ export default function Home() {
   const { user } = useAuth();
 
   const handleImageUpload = async (file: File) => {
-    setIsUploading(true);
+    // Show the uploaded image immediately
+    const fileUrl = URL.createObjectURL(file);
+    setUploadedImageUrl(fileUrl);
     setGeneratedUrls({
-      image_url: null,
+      image_url: fileUrl, // Show immediately
       model_url: null,
       depth_map_url: null
     });
+
+    setIsUploading(true);
 
     const uploadPromise = new Promise(async (resolve, reject) => {
       try {
@@ -53,6 +57,7 @@ export default function Home() {
 
         const data = await response.json();
         
+        // Update with server URLs (replace the local file URL)
         setGeneratedUrls({
           image_url: data.image_url,
           model_url: data.model_url,
@@ -60,6 +65,9 @@ export default function Home() {
         });
         
         setUploadedImageUrl(data.image_url);
+
+        // Clean up the local object URL
+        URL.revokeObjectURL(fileUrl);
 
         // Save to Firestore if user is logged in
         if (user && data.success) {
@@ -83,6 +91,8 @@ export default function Home() {
 
         resolve(data);
       } catch (error: any) {
+        // Clean up the local object URL on error
+        URL.revokeObjectURL(fileUrl);
         console.error('Upload Error:', error);
         reject(error);
       }
@@ -112,6 +122,10 @@ export default function Home() {
   };
 
   const handleRemoveImage = () => {
+    // Clean up object URL if it's a local file URL
+    if (uploadedImageUrl && uploadedImageUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(uploadedImageUrl);
+    }
     setUploadedImageUrl('');
     setGeneratedUrls({
       image_url: null,
@@ -460,20 +474,6 @@ export default function Home() {
                 )}
               </div>
             </div>
-            
-            {/* Depth Map Preview (if available) */}
-            {generatedUrls.depth_map_url && (
-              <div className="mt-6">
-                <h3 className="text-lg font-semibold mb-3">Depth Map</h3>
-                <div className="aspect-video rounded-lg overflow-hidden bg-black/10">
-                  <img 
-                    src={generatedUrls.depth_map_url} 
-                    alt="Depth map" 
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

@@ -32,6 +32,7 @@ export default function ImageUpload({
       'image/*': ['.jpeg', '.jpg', '.png', '.gif', '.bmp', '.webp']
     },
     maxFiles: 1,
+    multiple: false,
     onDragEnter: () => setIsDragActive(true),
     onDragLeave: () => setIsDragActive(false),
     onDropAccepted: () => setIsDragActive(false),
@@ -43,18 +44,28 @@ export default function ImageUpload({
     if (file) {
       onImageUpload(file);
     }
+    // Reset the input value to allow selecting the same file again
+    event.target.value = '';
   };
 
   if (uploadedImageUrl) {
     return (
       <div className="relative">
-        <div className="relative rounded-lg overflow-hidden border-2 border-white/10 bg-surface/30">
+        <div className="relative rounded-lg overflow-hidden border-2 border-white/10 bg-surface/30 h-64">
           <img
             src={uploadedImageUrl}
             alt="Uploaded image"
-            className="w-full h-64 object-cover"
+            className={`w-full h-full object-cover transition-opacity ${isUploading ? 'opacity-70' : ''}`}
           />
-          {onRemoveImage && (
+          {isUploading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
+                <p className="text-sm text-white">Converting to 3D...</p>
+              </div>
+            </div>
+          )}
+          {onRemoveImage && !isUploading && (
             <button
               onClick={onRemoveImage}
               className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-2 hover:bg-red-600 transition-colors"
@@ -64,7 +75,7 @@ export default function ImageUpload({
           )}
         </div>
         <p className="text-sm text-text-secondary mt-2 text-center">
-          Image uploaded successfully
+          {isUploading ? 'Converting to 3D model...' : 'Image uploaded successfully'}
         </p>
       </div>
     );
