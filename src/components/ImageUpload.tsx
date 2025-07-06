@@ -18,10 +18,14 @@ export default function ImageUpload({
   onRemoveImage
 }: ImageUploadProps) {
   const [isDragActive, setIsDragActive] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
       const file = acceptedFiles[0];
+      // Create preview URL
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
       onImageUpload(file);
     }
   }, [onImageUpload]);
@@ -42,12 +46,26 @@ export default function ImageUpload({
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
+      // Create preview URL
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
       onImageUpload(file);
     }
     // Reset the input value to allow selecting the same file again
     event.target.value = '';
   };
 
+  const handleRemoveImage = () => {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+    }
+    if (onRemoveImage) {
+      onRemoveImage();
+    }
+  };
+
+  // Show uploaded result
   if (uploadedImageUrl) {
     return (
       <div className="relative">
@@ -75,7 +93,7 @@ export default function ImageUpload({
           )}
         </div>
         <p className="text-sm text-text-secondary mt-2 text-center">
-          {isUploading ? 'Converting to 3D model...' : 'Image uploaded successfully'}
+          {isUploading ? 'Converting to 3D model...' : 'Image ready for conversion'}
         </p>
       </div>
     );

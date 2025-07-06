@@ -24,6 +24,7 @@ export default function Home() {
   const [generationMessage, setGenerationMessage] = useState('');
   const [mode, setMode] = useState<GenerationMode>('text');
   const [uploadedImageUrl, setUploadedImageUrl] = useState<string>('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadMessage, setUploadMessage] = useState('');
@@ -55,16 +56,16 @@ export default function Home() {
             setGenerationMessage(progressData.message || '');
           }
           
-          // Stop tracking when completed or error
+          // Stop tracking if completed or failed
           if (progressData.stage === 'completed' || progressData.stage === 'error') {
             clearInterval(progressIntervalRef.current!);
             progressIntervalRef.current = null;
           }
         }
       } catch (error) {
-        console.error('Progress tracking error:', error);
+        // Silently fail - don't spam console with progress errors
       }
-    }, 500); // Update every 500ms
+    }, 1000); // Check every second
   };
 
   // Function to stop progress tracking
@@ -75,61 +76,52 @@ export default function Home() {
     }
   };
 
-  // Function to cancel a backend job
-  const cancelBackendJob = async (jobId: string) => {
-    try {
-      await fetch('/api/python/cancel', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ job_id: jobId }),
-      });
-      console.log(`Cancelled backend job: ${jobId}`);
-    } catch (error) {
-      console.error('Error cancelling backend job:', error);
-    }
-  };
-
-  // Cleanup function to abort all ongoing requests
-  const abortAllRequests = () => {
-    if (uploadAbortControllerRef.current) {
-      uploadAbortControllerRef.current.abort();
-      uploadAbortControllerRef.current = null;
-    }
-    if (generateAbortControllerRef.current) {
-      generateAbortControllerRef.current.abort();
-      generateAbortControllerRef.current = null;
-    }
-    
-    // Cancel backend job if one is running
-    if (currentJobIdRef.current) {
-      cancelBackendJob(currentJobIdRef.current);
-      currentJobIdRef.current = null;
-    }
-    
-    // Stop progress tracking
-    stopProgressTracking();
-  };
-
-  // Effect to handle page unload/refresh
+  // Cleanup on component unmount
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      abortAllRequests();
-    };
-
-    // Only add beforeunload listener, not visibilitychange
-    // visibilitychange is too aggressive and triggers on tab switches
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    // Cleanup on component unmount
     return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      abortAllRequests();
+      stopProgressTracking();
+      
+      // Abort any pending requests
+      if (uploadAbortControllerRef.current) {
+        uploadAbortControllerRef.current.abort();
+      }
+      if (generateAbortControllerRef.current) {
+        generateAbortControllerRef.current.abort();
+      }
+      
+      // Clean up object URLs
+      if (uploadedImageUrl && uploadedImageUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(uploadedImageUrl);
+      }
     };
-  }, []);
+  }, [uploadedImageUrl]);
 
-  const handleImageUpload = async (file: File) => {
+  // Handle file selection (no upload yet)
+  const handleFileSelect = (file: File) => {
+    // Clean up previous object URL if exists
+    if (uploadedImageUrl && uploadedImageUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(uploadedImageUrl);
+    }
+    
+    setSelectedFile(file);
+    const fileUrl = URL.createObjectURL(file);
+    setUploadedImageUrl(fileUrl);
+    
+    // Clear previous results
+    setGeneratedUrls({
+      image_url: null,
+      model_url: null,
+      depth_map_url: null
+    });
+  };
+
+  // Handle image conversion (separate from file selection)
+  const handleConvertImage = async () => {
+    if (!selectedFile) {
+      toast.error('Please select an image first');
+      return;
+    }
+
     // Abort any previous upload request
     if (uploadAbortControllerRef.current) {
       uploadAbortControllerRef.current.abort();
@@ -138,22 +130,13 @@ export default function Home() {
     // Create new abort controller for this request
     const abortController = new AbortController();
     uploadAbortControllerRef.current = abortController;
-
-    // Show the uploaded image immediately
-    const fileUrl = URL.createObjectURL(file);
-    setUploadedImageUrl(fileUrl);
-    setGeneratedUrls({
-      image_url: fileUrl, // Show immediately
-      model_url: null,
-      depth_map_url: null
-    });
-
+    
     setIsUploading(true);
 
     const uploadPromise = new Promise(async (resolve, reject) => {
       try {
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('file', selectedFile);
         formData.append('depth_model', depthModel);
 
         const response = await fetch('/api/python/upload', {
@@ -182,23 +165,19 @@ export default function Home() {
           depth_map_url: data.depth_map_url || null
         });
         
+        // Clean up the local object URL and update with server URL
+        URL.revokeObjectURL(uploadedImageUrl);
         setUploadedImageUrl(data.image_url);
-
-        // Clean up the local object URL
-        URL.revokeObjectURL(fileUrl);
 
         resolve(data);
       } catch (error: any) {
-        // Clean up the local object URL on error
-        URL.revokeObjectURL(fileUrl);
-        
         // Don't show error if request was aborted
         if (error.name === 'AbortError') {
           console.log('Upload request was aborted');
           return;
         }
         
-        console.error('Upload Error:', error);
+        console.error('Error:', error);
         reject(error);
       } finally {
         // Clear the abort controller reference and job ID
@@ -210,19 +189,19 @@ export default function Home() {
     });
 
     toast.promise(uploadPromise, {
-      loading: 'Uploading and converting to 3D...',
-      success: 'Upload and conversion complete!',
+      loading: 'Converting your image to 3D...',
+      success: 'Conversion complete!',
       error: (err) => {
         // Don't show error toast for aborted requests
         if (err?.name === 'AbortError') return null;
         
-        if (err.message.includes('Invalid file type')) {
-          return 'Please upload a valid image file (JPEG, PNG, GIF, BMP, WebP)';
+        if (err.message.includes('Python API is not running')) {
+          return 'Server is not running. Please try again in a few minutes.';
         }
-        if (err.message.includes('File size too large')) {
-          return 'File size too large. Maximum size is 10MB.';
+        if (err.message.includes('timeout')) {
+          return 'Conversion took too long. Please try again.';
         }
-        return err.message || 'Upload failed. Please try again.';
+        return err.message || 'Failed to convert. Please try again.';
       },
     });
 
@@ -245,6 +224,7 @@ export default function Home() {
       URL.revokeObjectURL(uploadedImageUrl);
     }
     setUploadedImageUrl('');
+    setSelectedFile(null);
     setGeneratedUrls({
       image_url: null,
       model_url: null,
@@ -485,11 +465,24 @@ export default function Home() {
             ) : (
               <div className="space-y-4">
                 <ImageUpload
-                  onImageUpload={handleImageUpload}
+                  onImageUpload={handleFileSelect}
                   isUploading={isUploading}
                   uploadedImageUrl={uploadedImageUrl}
                   onRemoveImage={handleRemoveImage}
                 />
+                
+                {selectedFile && !isUploading && (
+                  <button
+                    onClick={handleConvertImage}
+                    disabled={!selectedFile}
+                    className={`w-full gradient-button py-3 flex items-center justify-center space-x-2 ${
+                      !selectedFile ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-glow'
+                    }`}
+                  >
+                    <FaMagic />
+                    <span>Convert to 3D Model</span>
+                  </button>
+                )}
                 
                 {isUploading && (
                   <div className="mt-4">
@@ -507,6 +500,7 @@ export default function Home() {
               </div>
             )}
           </div>
+          
           {/* Right Panel - Output */}
           <div className="glass-panel p-6">
             <div className="mb-6">
