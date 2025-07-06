@@ -42,8 +42,27 @@ cloudinary.config(
 
 # Initialize the TensorFlow SavedModel for depth estimation
 try:
-    # Set TensorFlow to use mixed precision for better performance
-    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+    # Check if GPU is available for TensorFlow first
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        logger.info(f"TensorFlow GPU detected: {len(gpus)} GPU(s)")
+        try:
+            # Enable memory growth to avoid allocating all GPU memory at once
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            
+            # Only use mixed precision if we have a compatible GPU
+            # GTX 1650 supports mixed precision, so this should work
+            if tf.test.is_built_with_cuda():
+                tf.keras.mixed_precision.set_global_policy('mixed_float16')
+                logger.info("TensorFlow configured to use GPU with mixed precision")
+            else:
+                logger.info("TensorFlow not built with CUDA, using CPU")
+        except RuntimeError as e:
+            logger.warning(f"GPU configuration failed: {e}")
+            logger.info("TensorFlow will run on CPU")
+    else:
+        logger.info("No TensorFlow GPU detected, running on CPU")
     
     # Configure TensorFlow for better performance
     tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
@@ -56,15 +75,18 @@ try:
     depth_model = tf.saved_model.load(model_path)
     logger.info("Successfully loaded TensorFlow SavedModel for depth estimation")
     
-    # Check if GPU is available for TensorFlow
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        logger.info(f"TensorFlow GPU available: {len(gpus)} GPU(s) detected")
-        # Enable memory growth to avoid allocating all GPU memory at once
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    else:
-        logger.info("TensorFlow running on CPU")
+    # Test which device is actually being used for computation
+    try:
+        with tf.device('/GPU:0' if gpus else '/CPU:0'):
+            test_tensor = tf.constant([[1.0]], dtype=tf.float32)
+            result = tf.square(test_tensor)
+            logger.info(f"TensorFlow computation test successful on: {result.device}")
+    except Exception as e:
+        logger.warning(f"GPU test failed: {e}, falling back to CPU")
+        with tf.device('/CPU:0'):
+            test_tensor = tf.constant([[1.0]], dtype=tf.float32)
+            result = tf.square(test_tensor)
+            logger.info(f"TensorFlow running on CPU: {result.device}")
         
 except Exception as e:
     logger.error(f"Failed to initialize TensorFlow depth model: {str(e)}")
@@ -76,22 +98,12 @@ def download_image(image_url):
     try:
         # Special handling for Cloudinary URLs to ensure best quality
         if "cloudinary.com" in image_url:
-            # Remove any transformation parameters and request original quality
-            parsed_url = urlparse(image_url)
-            path_parts = parsed_url.path.split('/')
-            
-            # Rebuild the URL without transformation parameters
-            # Format: https://res.cloudinary.com/cloud_name/image/upload/v1234567890/path/to/image.jpg
-            filtered_parts = []
-            upload_found = False
-            for part in path_parts:
-                if upload_found or part == "upload":
-                    upload_found = True
-                    filtered_parts.append(part)
-            
-            # Reconstruct the URL with original quality parameters
-            new_path = '/'.join(filtered_parts)
-            clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}/{new_path}?fl_attachment=true"
+            # For Cloudinary URLs, just add quality optimization without changing the core URL
+            # This preserves the cloud name and proper path structure
+            if "?" in image_url:
+                clean_url = f"{image_url}&fl_attachment=true"
+            else:
+                clean_url = f"{image_url}?fl_attachment=true"
             logger.info(f"Optimized Cloudinary URL: {clean_url}")
             response = requests.get(clean_url, timeout=30)
         else:
@@ -148,34 +160,44 @@ def generate_depth_map(image):
         
         # Run inference with optimized approach
         try:
-            # Use the most common signature first (fastest path)
-            if 'serving_default' in depth_model.signatures:
-                infer_func = depth_model.signatures['serving_default']
-                logger.info("Using serving_default signature")
-                
-                # Try the most common input key names in order of likelihood
-                input_keys = ['input_1', 'image', 'inputs', 'x']
-                depth_prediction = None
-                
-                for key in input_keys:
-                    try:
-                        result = infer_func(**{key: input_tensor})
-                        # Get the first output (usually depth)
-                        depth_prediction = list(result.values())[0]
-                        logger.info(f"Successfully used input key: {key}")
-                        break
-                    except Exception as e:
-                        logger.debug(f"Failed with input key {key}: {str(e)}")
-                        continue
-                
-                if depth_prediction is None:
-                    raise ValueError("Could not find valid input key for the model")
-                    
+            # Determine the best device to use
+            available_gpus = tf.config.experimental.list_physical_devices('GPU')
+            if available_gpus and tf.test.is_built_with_cuda():
+                device = '/GPU:0'
+                logger.info("Using GPU for inference")
             else:
-                # Fallback: try direct model call
-                depth_prediction = depth_model(input_tensor)
-                if isinstance(depth_prediction, dict):
-                    depth_prediction = list(depth_prediction.values())[0]
+                device = '/CPU:0'
+                logger.info("Using CPU for inference")
+            
+            with tf.device(device):
+                # Use the most common signature first (fastest path)
+                if 'serving_default' in depth_model.signatures:
+                    infer_func = depth_model.signatures['serving_default']
+                    logger.info(f"Using serving_default signature on {device}")
+                    
+                    # Try the most common input key names in order of likelihood
+                    input_keys = ['input_1', 'image', 'inputs', 'x']
+                    depth_prediction = None
+                    
+                    for key in input_keys:
+                        try:
+                            result = infer_func(**{key: input_tensor})
+                            # Get the first output (usually depth)
+                            depth_prediction = list(result.values())[0]
+                            logger.info(f"Successfully used input key: {key}")
+                            break
+                        except Exception as e:
+                            logger.debug(f"Failed with input key {key}: {str(e)}")
+                            continue
+                    
+                    if depth_prediction is None:
+                        raise ValueError("Could not find valid input key for the model")
+                        
+                else:
+                    # Fallback: try direct model call
+                    depth_prediction = depth_model(input_tensor)
+                    if isinstance(depth_prediction, dict):
+                        depth_prediction = list(depth_prediction.values())[0]
             
         except Exception as e:
             logger.error(f"Model inference failed: {str(e)}")
@@ -204,12 +226,15 @@ def generate_depth_map(image):
         temp_path = os.path.join("temp", f"depth_vis_{timestamp}.png")
         
         try:
-            # Use a faster plotting method
-            plt.figure(figsize=(8, 8))  # Reduced size for speed
+            # Use a non-GUI backend to avoid threading issues
+            import matplotlib
+            matplotlib.use('Agg')  # Set non-GUI backend before any matplotlib operations
+            
+            plt.figure(figsize=(8, 8))  # Keep original size
             plt.imshow(depth, cmap='gray')
             plt.axis('off')
             plt.tight_layout()
-            plt.savefig(temp_path, dpi=100, bbox_inches='tight')  # Reduced DPI for speed
+            plt.savefig(temp_path, dpi=100, bbox_inches='tight')
             plt.close()
             logger.info(f"Saved depth map visualization to {temp_path}")
               # Upload depth map visualization to Cloudinary using same name pattern as model
@@ -260,9 +285,21 @@ def create_point_cloud(image, depth_map, fx=1000, fy=1000):
     point_cloud = []
     colors = []
     
-    # Loop through each pixel
-    for v in range(depth_array.shape[0]):
-        for u in range(depth_array.shape[1]):
+    # For large images, subsample aggressively to reduce processing time
+    step = 1
+    if depth_array.shape[0] * depth_array.shape[1] > 500000:  # If more than 500k pixels
+        step = 4  # Sample every 4th pixel for very large images
+        logger.info(f"Very large image detected ({depth_array.shape[0]}x{depth_array.shape[1]}), subsampling by factor {step}")
+    elif depth_array.shape[0] * depth_array.shape[1] > 200000:  # If more than 200k pixels
+        step = 3  # Sample every 3rd pixel
+        logger.info(f"Large image detected ({depth_array.shape[0]}x{depth_array.shape[1]}), subsampling by factor {step}")
+    elif depth_array.shape[0] * depth_array.shape[1] > 100000:  # If more than 100k pixels
+        step = 2  # Sample every 2nd pixel
+        logger.info(f"Medium image detected ({depth_array.shape[0]}x{depth_array.shape[1]}), subsampling by factor {step}")
+    
+    # Loop through each pixel with subsampling
+    for v in range(0, depth_array.shape[0], step):
+        for u in range(0, depth_array.shape[1], step):
             Z = depth_array[v, u]  # Depth value
             X = (u - cx) * Z / fx
             Y = (v - cy) * Z / fy
@@ -291,40 +328,52 @@ def create_obj_file(point_cloud, colors):
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(point_cloud)
     pcd.colors = o3d.utility.Vector3dVector(colors)
-      # Aggressive initial downsampling for performance
+      # Smart downsampling for performance
     logger.info(f"Initial point cloud size: {len(point_cloud)} points")
-    target_points = 50000  # Target 50k points for good balance
+    
+    # Target around 50k points for better quality while maintaining speed
+    target_points = 50000
     if len(point_cloud) > target_points:
         # Calculate voxel size to achieve target point count
-        # Assuming uniform distribution, cube root of ratio gives approximate voxel size
+        # Use moderate downsampling with reasonable voxel size
         ratio = (len(point_cloud) / target_points) ** (1/3)
-        voxel_size = 0.02 * ratio  # Base size 2cm * ratio
+        voxel_size = 0.05 * ratio  # Balanced base size for quality vs speed
         pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
         logger.info(f"Downsampled to {len(pcd.points)} points using voxel size {voxel_size:.3f}")
     
+    # Only use uniform downsampling if we still have too many points (very large datasets)
+    if len(pcd.points) > target_points * 1.5:  # Allow some flexibility
+        # Use uniform downsampling as a fallback
+        downsample_factor = max(1, int(len(pcd.points) / target_points))
+        pcd = pcd.uniform_down_sample(every_k_points=downsample_factor)
+        logger.info(f"Further downsampled to {len(pcd.points)} points using uniform sampling (every {downsample_factor} points)")
+    
     # Create a mesh from the point cloud
     try:
+        
         # Estimate normals with optimized parameters
         logger.info("Starting normal estimation...")
         # Use optimized parameters for faster normal estimation
         pcd.estimate_normals(
             search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                radius=0.1,  # Larger radius
-                max_nn=15    # Fewer neighbors
+                radius=0.15,  # Larger radius for faster computation
+                max_nn=10     # Fewer neighbors for speed
             )
         )
         logger.info("Basic normal estimation complete, orienting normals...")
         
-        # Faster normal orientation with fewer neighbors
-        pcd.orient_normals_consistent_tangent_plane(k=10)
-        logger.info("Normal estimation completed")
+        # Skip normal orientation for very large point clouds to save time
+        if len(pcd.points) > 75000:  # Adjusted threshold for the new target
+            logger.info("Skipping normal orientation for large point cloud to save time")
+        else:
+            # Faster normal orientation with fewer neighbors
+            pcd.orient_normals_consistent_tangent_plane(k=5)  # Restored k to 5 for better quality
+            logger.info("Normal orientation completed")
         
-        # Skip point cloud visualization for faster processing
-        
-        # Start with optimized quality settings
-        depth = 8  # Start with depth 8 which usually gives good results
-        points_percent = 1.0
-        max_attempts = 2  # Reduce max attempts since we're starting with better params
+        # Start with balanced quality settings
+        depth = 7  # Restored to 7 for better quality
+        points_percent = 1.0  # Start with 100% of points
+        max_attempts = 2  # Keep at 2 attempts
         attempt = 0
         
         while attempt < max_attempts:
@@ -351,11 +400,12 @@ def create_obj_file(point_cloud, colors):
             vertices_to_remove = densities < np.quantile(densities, 0.15)  # Remove more low-density vertices
             mesh.remove_vertices_by_mask(vertices_to_remove)
             
-            # Optimize the mesh
-            if len(np.asarray(mesh.vertices)) > target_points:
-                # Decimate mesh to reduce complexity while preserving shape
-                reduction_ratio = target_points / len(np.asarray(mesh.vertices))
-                mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=int(len(np.asarray(mesh.triangles)) * reduction_ratio))
+            # Optimize the mesh - balanced approach
+            if len(np.asarray(mesh.vertices)) > 30000:  # Reasonable threshold
+                # Moderate decimation to reduce complexity while preserving quality
+                target_triangles = min(40000, len(np.asarray(mesh.triangles)) // 2)  # Less aggressive reduction
+                mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target_triangles)
+                logger.info(f"Decimated mesh to {len(np.asarray(mesh.vertices))} vertices, {len(np.asarray(mesh.triangles))} triangles")
             
             # Optimize mesh
             mesh.compute_vertex_normals()
@@ -378,13 +428,13 @@ def create_obj_file(point_cloud, colors):
             
             # Clean up the temporary file if too large
             os.remove(temp_obj_path)
-              # Adjust parameters for next attempt
+              # Adjust parameters for next attempt - moderate reduction
             attempt += 1
             if attempt < max_attempts:
-                # On second attempt, reduce both depth and point density
-                depth = 6
-                points_percent = 0.5
-                logger.info(f"Reducing parameters: depth={depth}, density={points_percent*100}%")
+                # On second attempt, reduce depth and point density moderately
+                depth = 6  # Reduce from 7 to 6
+                points_percent = 0.7  # Use 70% of points (was 0.3)
+                logger.info(f"Reducing parameters for retry: depth={depth}, density={points_percent*100}%")
                 continue
             
         logger.error("Failed to create OBJ file under 10MB after multiple attempts")

@@ -1,15 +1,17 @@
 'use client';
 
 import { useState } from 'react';
-import { FaDownload, FaMagic } from 'react-icons/fa';
+import { FaDownload, FaMagic, FaImage } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import useAuth from '@/hooks/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import ImageUpload from '@/components/ImageUpload';
 
 export default function Home() {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [uploadedImage, setUploadedImage] = useState<File | null>(null);
   const [generatedUrls, setGeneratedUrls] = useState<{
     image_url: string | null;
     model_url: string | null;
@@ -20,7 +22,109 @@ export default function Home() {
     depth_map_url: null
   });
   const [generationStep, setGenerationStep] = useState(0);
+  const [processingMode, setProcessingMode] = useState<'prompt' | 'upload'>('prompt');
   const { user } = useAuth();
+
+  const handleImageUpload = async (file: File) => {
+    setUploadedImage(file);
+    setProcessingMode('upload');
+    
+    // Automatically start processing when image is uploaded
+    await processUploadedImage(file);
+  };
+
+  const processUploadedImage = async (file: File) => {
+    setIsGenerating(true);
+    setGenerationStep(1);
+    setGeneratedUrls({
+      image_url: null,
+      model_url: null,
+      depth_map_url: null
+    });
+    
+    const uploadPromise = new Promise(async (resolve, reject) => {
+      try {
+        const formData = new FormData();
+        formData.append('image', file);
+        
+        const response = await fetch('/api/python/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('Upload API Error:', errorData);
+          throw new Error(errorData.error || 'Failed to process uploaded image');
+        }
+        
+        const data = await response.json();
+        console.log('Upload API Response:', data);
+
+        if (!data.success) {
+          throw new Error(data.error || 'Failed to process uploaded image');
+        }
+
+        // Set all URLs from the API response
+        setGeneratedUrls({
+          image_url: data.image_url || null,
+          model_url: data.model_url || null,
+          depth_map_url: data.depth_map_url || null
+        });
+
+        setGenerationStep(4);
+        
+        // Store the processed model if user is logged in
+        if (user) {
+          try {
+            const db = getFirebaseFirestore();
+            if (db) {
+              const modelsCollection = collection(db, 'models');
+              await addDoc(modelsCollection, {
+                userId: user.uid,
+                prompt: `Uploaded image: ${file.name}`,
+                imagePath: data.image_url,
+                modelUrl: data.model_url,
+                depthMapUrl: data.depth_map_url,
+                source: 'upload',
+                createdAt: serverTimestamp()
+              });
+            }
+          } catch (err) {
+            console.error('Error saving model:', err);
+            toast.error('Failed to save to your account, but processing was successful');
+          }
+        }
+        
+        resolve(data);
+      } catch (error: any) {
+        console.error('Upload Error:', error);
+        reject(error);
+      }
+    });
+
+    toast.promise(uploadPromise, {
+      loading: 'Processing uploaded image...',
+      success: 'Image processed successfully!',
+      error: (err) => {
+        if (err.message.includes('Python API is not running')) {
+          return 'Server is not running. Please try again in a few minutes.';
+        }
+        if (err.message.includes('timeout')) {
+          return 'Processing took too long. Please try again.';
+        }
+        return err.message || 'Failed to process image. Please try again.';
+      },
+    });
+    
+    try {
+      await uploadPromise;
+    } catch (error) {
+      // Error is handled by toast.promise
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   const handleGenerate = async () => {
     if (!prompt.trim()) {
@@ -28,6 +132,7 @@ export default function Home() {
       return;
     }
     
+    setProcessingMode('prompt');
     setIsGenerating(true);
     setGenerationStep(1);
     setGeneratedUrls({
@@ -87,6 +192,7 @@ export default function Home() {
                 prompt,                imagePath: data.image_url,
                 modelUrl: data.model_url,
                 depthMapUrl: data.depth_map_url,
+                source: 'prompt',
                 createdAt: serverTimestamp()
               });
             }
@@ -182,53 +288,110 @@ export default function Home() {
           {/* Left Panel - Input */}
           <div className="glass-panel p-6">
             <h1 className="text-3xl font-bold mb-6 text-gradient">
-              Describe Your 3D Model
+              Create Your 3D Model
             </h1>
             
-            <div className="space-y-4">
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="A futuristic space rover with robotic arms..."
-                className="w-full h-40 p-4 rounded-lg input-gradient focus:outline-none resize-none"
-                disabled={isGenerating}
-              />
-              
+            {/* Mode Toggle */}
+            <div className="flex mb-6 bg-surface/30 rounded-lg p-1">
               <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !prompt.trim()}
-                className={`w-full gradient-button py-3 flex items-center justify-center space-x-2 ${
-                  isGenerating || !prompt.trim() ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-glow'
+                onClick={() => setProcessingMode('prompt')}
+                className={`flex-1 py-2 px-4 rounded-md flex items-center justify-center space-x-2 transition-colors ${
+                  processingMode === 'prompt' 
+                    ? 'bg-primary text-white' 
+                    : 'text-text-secondary hover:text-primary'
                 }`}
               >
-                <FaMagic className={isGenerating ? 'animate-spin' : ''} />
-                <span>
-                  {isGenerating ? 'Generating...' : 'Generate 3D Model'}
-                </span>
+                <FaMagic />
+                <span>Text to 3D</span>
               </button>
-              
-              {isGenerating && (
-                <div className="mt-4">
-                  <div className="w-full bg-surface/30 h-2 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-primary transition-all duration-300"
-                      style={{ width: `${(generationStep / 4) * 100}%` }}
-                    />
-                  </div>
-                  <div className="text-sm text-text-secondary mt-2">
-                    {generationStep === 1 && 'Creating image from text...'}
-                    {generationStep === 2 && 'Generating depth map...'}
-                    {generationStep === 3 && 'Converting to 3D model...'}
-                    {generationStep === 4 && 'Finalizing your model...'}
-                  </div>
-                </div>
-              )}
+              <button
+                onClick={() => setProcessingMode('upload')}
+                className={`flex-1 py-2 px-4 rounded-md flex items-center justify-center space-x-2 transition-colors ${
+                  processingMode === 'upload' 
+                    ? 'bg-primary text-white' 
+                    : 'text-text-secondary hover:text-primary'
+                }`}
+              >
+                <FaImage />
+                <span>Upload Image</span>
+              </button>
             </div>
+            
+            {processingMode === 'prompt' ? (
+              <div className="space-y-4">
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="A futuristic space rover with robotic arms..."
+                  className="w-full h-40 p-4 rounded-lg input-gradient focus:outline-none resize-none"
+                  disabled={isGenerating}
+                />
+                
+                <button
+                  onClick={handleGenerate}
+                  disabled={isGenerating || !prompt.trim()}
+                  className={`w-full gradient-button py-3 flex items-center justify-center space-x-2 ${
+                    isGenerating || !prompt.trim() ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-glow'
+                  }`}
+                >
+                  <FaMagic className={isGenerating ? 'animate-spin' : ''} />
+                  <span>
+                    {isGenerating ? 'Generating...' : 'Generate 3D Model'}
+                  </span>
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <ImageUpload
+                  onImageUpload={handleImageUpload}
+                  disabled={isGenerating}
+                  className="mb-4"
+                />
+                
+                <div className="text-sm text-text-secondary">
+                  <p>Upload an image and we'll automatically convert it to a 3D model using depth estimation.</p>
+                  <p className="mt-2">Supported formats: JPG, PNG, GIF (up to 10MB)</p>
+                </div>
+              </div>
+            )}
+            
+            {isGenerating && (
+              <div className="mt-4">
+                <div className="w-full bg-surface/30 h-2 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-primary transition-all duration-300"
+                    style={{ width: `${(generationStep / 4) * 100}%` }}
+                  />
+                </div>
+                <div className="text-sm text-text-secondary mt-2">
+                  {processingMode === 'prompt' ? (
+                    <>
+                      {generationStep === 1 && 'Creating image from text...'}
+                      {generationStep === 2 && 'Generating depth map...'}
+                      {generationStep === 3 && 'Converting to 3D model...'}
+                      {generationStep === 4 && 'Finalizing your model...'}
+                    </>
+                  ) : (
+                    <>
+                      {generationStep === 1 && 'Processing uploaded image...'}
+                      {generationStep === 2 && 'Generating depth map...'}
+                      {generationStep === 3 && 'Converting to 3D model...'}
+                      {generationStep === 4 && 'Finalizing your model...'}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           {/* Right Panel - Output */}
           <div className="glass-panel p-6">
             <div className="mb-6">
               <h2 className="text-2xl font-bold">Generated Results</h2>
+              {processingMode === 'upload' && uploadedImage && (
+                <p className="text-sm text-text-secondary mt-1">
+                  Processing: {uploadedImage.name}
+                </p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               {/* Image Preview */}
@@ -268,9 +431,11 @@ export default function Home() {
                       </div>
                     ) : (
                       <div className="text-center p-6">
-                        <p className="text-lg mb-2">Your generated image will appear here</p>
+                        <p className="text-lg mb-2">
+                          {processingMode === 'prompt' ? 'Your generated image will appear here' : 'Your processed image will appear here'}
+                        </p>
                         <p className="text-sm text-text-secondary">
-                          Enter a prompt and click Generate to start
+                          {processingMode === 'prompt' ? 'Enter a prompt and click Generate to start' : 'Upload an image to start processing'}
                         </p>
                       </div>
                     )}
@@ -309,7 +474,7 @@ export default function Home() {
                       <div className="text-center p-6">
                         <p className="text-lg mb-2">3D model will appear here</p>
                         <p className="text-sm text-text-secondary">
-                          Enter a prompt and click Generate to start
+                          {processingMode === 'prompt' ? 'Enter a prompt and click Generate to start' : 'Upload an image to start processing'}
                         </p>
                       </div>
                     )}
