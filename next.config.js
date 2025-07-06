@@ -15,18 +15,6 @@ const nextConfig = {
     }
     return config;
   },
-  // This is needed for the Python API service
-  async rewrites() {
-    return [
-      {
-        source: '/api/python/:path*',
-        destination: 
-          process.env.NODE_ENV === 'production'
-            ? `${process.env.NEXT_PUBLIC_API_URL}/:path*` // Use the deployed API URL
-            : 'http://localhost:5000/:path*', // Use local Python API in development
-      },
-    ];
-  },
   // Use strict mode for better development experience
   reactStrictMode: true,
   // Use swcMinify for better performance

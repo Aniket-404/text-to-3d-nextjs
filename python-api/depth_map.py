@@ -18,8 +18,7 @@ import cloudinary
 import cloudinary.uploader
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from transformers import DPTImageProcessor, DPTForDepthEstimation
-import torch
+import tensorflow as tf
 import open3d as o3d
 import google.generativeai as genai
 import matplotlib.pyplot as plt
@@ -41,17 +40,34 @@ cloudinary.config(
     api_secret=os.environ.get("CLOUDINARY_API_SECRET")
 )
 
-# Initialize the DPT model and processor with CUDA if available
+# Initialize the TensorFlow SavedModel for depth estimation
 try:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    processor = DPTImageProcessor.from_pretrained("Intel/dpt-beit-large-512")
-    model = DPTForDepthEstimation.from_pretrained("Intel/dpt-beit-large-512").to(device)
-    if device.type == "cuda":
-        logger.info(f"Successfully initialized DPT model on GPU: {torch.cuda.get_device_name(0)}")
+    # Set TensorFlow to use mixed precision for better performance
+    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+    
+    # Configure TensorFlow for better performance
+    tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
+    tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
+    
+    model_path = os.path.join(os.path.dirname(__file__), "depth_pro_converted_tf")
+    logger.info(f"Loading TensorFlow SavedModel from: {model_path}")
+    
+    # Load the SavedModel
+    depth_model = tf.saved_model.load(model_path)
+    logger.info("Successfully loaded TensorFlow SavedModel for depth estimation")
+    
+    # Check if GPU is available for TensorFlow
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        logger.info(f"TensorFlow GPU available: {len(gpus)} GPU(s) detected")
+        # Enable memory growth to avoid allocating all GPU memory at once
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
     else:
-        logger.info("GPU not available, initialized DPT model on CPU")
+        logger.info("TensorFlow running on CPU")
+        
 except Exception as e:
-    logger.error(f"Failed to initialize DPT model: {str(e)}")
+    logger.error(f"Failed to initialize TensorFlow depth model: {str(e)}")
     raise
 
 def download_image(image_url):
@@ -100,46 +116,100 @@ def download_image(image_url):
         raise
 
 def generate_depth_map(image):
-    """Generate a depth map from an image using DPT model"""
-    logger.info("Generating depth map using DPT")
+    """Generate a depth map from an image using TensorFlow SavedModel"""
+    logger.info("Generating depth map using TensorFlow SavedModel")
     
     try:
-        # Get the current device
-        device = next(model.parameters()).device
-        logger.info(f"Using device: {device}")
+        # Preprocess the image for the model
+        # Convert PIL image to numpy array
+        img_array = np.array(image)
         
-        # Prepare image for the model
-        inputs = processor(images=image, return_tensors="pt")
-        # Move inputs to the same device as the model
-        inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        # Ensure image is RGB
+        if len(img_array.shape) == 2:  # Grayscale
+            img_array = np.stack([img_array] * 3, axis=-1)
+        elif img_array.shape[2] == 4:  # RGBA
+            img_array = img_array[:, :, :3]
         
-        # Generate depth prediction
-        with torch.no_grad():
-            outputs = model(**inputs)
-            predicted_depth = outputs.predicted_depth
-
-        # Interpolate to original size
-        prediction = torch.nn.functional.interpolate(
-            predicted_depth.unsqueeze(1),
-            size=image.size[::-1],
-            mode="bicubic",
-            align_corners=False,
-        )
-
-        # Convert to numpy array and normalize
-        output = prediction.squeeze().cpu().numpy()
-        formatted = (output * 255 / np.max(output)).astype("uint8")
-        depth = Image.fromarray(formatted)
+        # Store original size for later resizing
+        original_size = img_array.shape[:2]
+        
+        # Resize to a smaller size for faster processing (384x384 is common)
+        # This will make the model much faster while still providing good results
+        target_size = (384, 384)
+        img_resized = tf.image.resize(img_array, target_size)
+        
+        # Normalize to [0, 1] and convert to float32
+        img_resized = tf.cast(img_resized, tf.float32) / 255.0
+        
+        # Add batch dimension
+        input_tensor = tf.expand_dims(img_resized, axis=0)
+        
+        logger.info(f"Input tensor shape: {input_tensor.shape}")
+        
+        # Run inference with optimized approach
+        try:
+            # Use the most common signature first (fastest path)
+            if 'serving_default' in depth_model.signatures:
+                infer_func = depth_model.signatures['serving_default']
+                logger.info("Using serving_default signature")
+                
+                # Try the most common input key names in order of likelihood
+                input_keys = ['input_1', 'image', 'inputs', 'x']
+                depth_prediction = None
+                
+                for key in input_keys:
+                    try:
+                        result = infer_func(**{key: input_tensor})
+                        # Get the first output (usually depth)
+                        depth_prediction = list(result.values())[0]
+                        logger.info(f"Successfully used input key: {key}")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Failed with input key {key}: {str(e)}")
+                        continue
+                
+                if depth_prediction is None:
+                    raise ValueError("Could not find valid input key for the model")
+                    
+            else:
+                # Fallback: try direct model call
+                depth_prediction = depth_model(input_tensor)
+                if isinstance(depth_prediction, dict):
+                    depth_prediction = list(depth_prediction.values())[0]
+            
+        except Exception as e:
+            logger.error(f"Model inference failed: {str(e)}")
+            raise
+        
+        # Convert prediction to numpy
+        depth_array = depth_prediction.numpy().squeeze()
+        
+        # Resize back to original image size
+        if depth_array.shape != original_size:
+            depth_array = tf.image.resize(
+                tf.expand_dims(tf.expand_dims(depth_array, axis=0), axis=-1),
+                original_size,
+                method='bilinear'  # Use bilinear interpolation for better quality
+            ).numpy().squeeze()
+        
+        # Normalize depth values to 0-255 range
+        depth_normalized = (depth_array - depth_array.min()) / (depth_array.max() - depth_array.min())
+        depth_uint8 = (depth_normalized * 255).astype(np.uint8)
+        
+        # Convert to PIL Image
+        depth = Image.fromarray(depth_uint8)
         
         # Save a visualization of the depth map and upload to Cloudinary
         timestamp = int(time.time())
         temp_path = os.path.join("temp", f"depth_vis_{timestamp}.png")
         
         try:
-            plt.figure(figsize=(10, 10))
+            # Use a faster plotting method
+            plt.figure(figsize=(8, 8))  # Reduced size for speed
             plt.imshow(depth, cmap='gray')
             plt.axis('off')
-            plt.savefig(temp_path)
+            plt.tight_layout()
+            plt.savefig(temp_path, dpi=100, bbox_inches='tight')  # Reduced DPI for speed
             plt.close()
             logger.info(f"Saved depth map visualization to {temp_path}")
               # Upload depth map visualization to Cloudinary using same name pattern as model

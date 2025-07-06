@@ -1,6 +1,57 @@
 import { NextResponse } from 'next/server';
+import http from 'http';
+import https from 'https';
+import { URL } from 'url';
 
-export const maxDuration = 300; // Set max duration to 5 minutes
+export const maxDuration = 600; // Set max duration to 10 minutes for depth processing
+
+// Helper function to make HTTP requests with custom timeout
+function makeRequest(url: string, options: any, data?: string): Promise<{ statusCode?: number; data: string }> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const isHttps = parsedUrl.protocol === 'https:';
+    const client = isHttps ? https : http;
+    
+    const requestOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (isHttps ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      timeout: 600000, // 10 minutes timeout
+    };
+    
+    const req = client.request(requestOptions, (res) => {
+      let responseData = '';
+      
+      res.on('data', (chunk) => {
+        responseData += chunk;
+      });
+      
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode,
+          data: responseData
+        });
+      });
+    });
+    
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Request timeout after 10 minutes'));
+    });
+    
+    req.on('error', (error) => {
+      reject(error);
+    });
+    
+    if (data) {
+      req.write(data);
+    }
+    
+    req.end();
+  });
+}
 
 export async function POST(request: Request) {
   try {
@@ -14,8 +65,11 @@ export async function POST(request: Request) {
       );
     }
     
-    // Get the API URL from environment variables
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+    // Use localhost for local development
+    const apiUrl = process.env.NODE_ENV === 'production' 
+      ? process.env.NEXT_PUBLIC_API_URL 
+      : 'http://localhost:5000';
+    
     if (!apiUrl) {
       console.error('API URL is not configured');
       return NextResponse.json(
@@ -28,14 +82,14 @@ export async function POST(request: Request) {
     
     // First check if the API is running
     try {
-      const healthCheck = await fetch(`${apiUrl}`, {
+      const healthResponse = await makeRequest(`${apiUrl}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
         },
       });
       
-      if (!healthCheck.ok) {
+      if (!healthResponse.statusCode || healthResponse.statusCode >= 400) {
         console.error('Python API is not running or not accessible');
         return NextResponse.json(
           { error: 'Python API is not running. Please make sure the Python server is started.' },
@@ -43,7 +97,7 @@ export async function POST(request: Request) {
         );
       }
       
-      const healthData = await healthCheck.json();
+      const healthData = JSON.parse(healthResponse.data);
       console.log('API Health Check:', healthData);
     } catch (error) {
       console.error('Failed to connect to Python API:', error);
@@ -54,45 +108,44 @@ export async function POST(request: Request) {
     }
     
     try {
-      const response = await fetch(`${apiUrl}/generate`, {
+      const response = await makeRequest(`${apiUrl}/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ prompt }),
-      });
+      }, JSON.stringify({ prompt }));
     
-      if (!response.ok) {
-        console.error('API Error Status:', response.status);
-        const errorText = await response.text();
+      if (!response.statusCode || response.statusCode >= 400) {
+        console.error('API Error Status:', response.statusCode);
         let errorMessage = 'Failed to generate content';
         
         try {
-          const errorData = JSON.parse(errorText);
+          const errorData = JSON.parse(response.data);
           errorMessage = errorData.error || errorMessage;
         } catch (e) {
           // If the response isn't valid JSON, use the raw text
-          errorMessage = errorText || errorMessage;
+          errorMessage = response.data || errorMessage;
         }
         
         console.error('API Error Message:', errorMessage);
         
         return NextResponse.json(
           { error: errorMessage },
-          { status: response.status }
+          { status: response.statusCode || 500 }
         );
       }
       
-      const data = await response.json();
+      const data = JSON.parse(response.data);
       return NextResponse.json(data);
       
     } catch (error: any) {
-      console.error('Fetch error:', error);
+      console.error('Request error:', error);
+      const isTimeout = error.message?.includes('timeout') || error.message?.includes('Request timeout');
       return NextResponse.json(
         { 
-          error: error.name === 'AbortError' 
-            ? 'Image generation is taking longer than usual. Please try again.' 
-            : 'Failed to communicate with Python API'
+          error: isTimeout
+            ? 'Image generation is taking longer than usual (>10 minutes). The process may still be running on the server.' 
+            : 'Failed to communicate with Python API: ' + error.message
         },
         { status: 500 }
       );

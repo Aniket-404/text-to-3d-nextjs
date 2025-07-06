@@ -53,17 +53,24 @@ def generate():
     if not prompt:
         return jsonify({"error": "No prompt provided"}), 400
     
+    start_time = time.time()
+    
     try:
         logger.info(f"Processing prompt: {prompt}")
+        logger.info("Starting image generation and 3D processing...")
         
         # Generate image and process to 3D using the unified function from depth_map.py
         result = process_image_to_3d(None, prompt=prompt, use_huggingface=True)
+        
+        total_time = time.time() - start_time
+        logger.info(f"Total processing time: {total_time:.2f} seconds")
         
         if not result["success"]:
             logger.error(f"Failed to process image: {result.get('error')}")
             return jsonify({
                 "error": result.get('error', "Failed to process image"),
-                "success": False
+                "success": False,
+                "processing_time": total_time
             }), 500
         
         # Return URLs for both the generated image and 3D model
@@ -71,14 +78,17 @@ def generate():
             "image_url": result["generated_image_url"],  # URL of the generated image
             "model_url": result["model_url"],           # URL of the 3D model file
             "depth_map_url": result["depth_map_url"],   # URL of the depth map (optional)
-            "success": True
+            "success": True,
+            "processing_time": total_time
         })
             
     except Exception as e:
-        logger.error(f"Failed to process request: {str(e)}", exc_info=True)
+        total_time = time.time() - start_time
+        logger.error(f"Failed to process request after {total_time:.2f} seconds: {str(e)}", exc_info=True)
         return jsonify({
             "error": str(e),
-            "success": False
+            "success": False,
+            "processing_time": total_time
         }), 500
 
 @app.route('/delete', methods=['POST'])
