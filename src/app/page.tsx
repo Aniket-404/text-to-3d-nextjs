@@ -3,9 +3,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { FaDownload, FaMagic, FaFileUpload, FaKeyboard } from 'react-icons/fa';
 import toast from 'react-hot-toast';
-import useAuth from '@/hooks/useAuth';
-import { getFirebaseFirestore } from '@/lib/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import ImageUpload from '@/components/ImageUpload';
 
 type GenerationMode = 'text' | 'upload';
@@ -30,7 +27,6 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadMessage, setUploadMessage] = useState('');
-  const { user } = useAuth();
 
   // Refs to store abort controllers and job IDs for ongoing requests
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
@@ -189,26 +185,6 @@ export default function Home() {
         // Clean up the local object URL
         URL.revokeObjectURL(fileUrl);
 
-        // Save to Firestore if user is logged in
-        if (user && data.success) {
-          try {
-            const db = getFirebaseFirestore();
-            if (db) {
-              await addDoc(collection(db, 'generations'), {
-                userId: user.uid,
-                type: 'upload',
-                originalImageUrl: data.image_url,
-                modelUrl: data.model_url,
-                depthMapUrl: data.depth_map_url,
-                fileName: file.name,
-                createdAt: serverTimestamp(),
-              });
-            }
-          } catch (error) {
-            console.error('Error saving to Firestore:', error);
-          }
-        }
-
         resolve(data);
       } catch (error: any) {
         // Clean up the local object URL on error
@@ -327,26 +303,6 @@ export default function Home() {
           depth_map_url: data.depth_map_url || null
         });
         
-        // Save to Firestore if user is logged in
-        if (user && data.success) {
-          try {
-            const db = getFirebaseFirestore();
-            if (db) {
-              await addDoc(collection(db, 'generations'), {
-                userId: user.uid,
-                type: 'prompt',
-                prompt: prompt,
-                imageUrl: data.image_url,
-                modelUrl: data.model_url,
-                depthMapUrl: data.depth_map_url,
-                createdAt: serverTimestamp(),
-              });
-            }
-          } catch (error) {
-            console.error('Error saving to Firestore:', error);
-          }
-        }
-        
         resolve(data);
       } catch (error: any) {
         // Don't show error if request was aborted
@@ -418,30 +374,13 @@ export default function Home() {
               About
             </a>
             <a 
-              href="https://github.com" 
+              href="https://github.com/Aniket-404/text-to-3d-nextjs" 
               target="_blank"
               className="text-text-secondary hover:text-primary transition-colors"
               title="GitHub"
             >
               GitHub
             </a>
-            {user ? (
-              <a 
-                href="/dashboard" 
-                className="flex items-center space-x-2 bg-surface/50 hover:bg-surface/80 px-3 py-2 rounded-md transition-colors"
-              >
-                <FaMagic />
-                <span>Dashboard</span>
-              </a>
-            ) : (
-              <a 
-                href="/auth/login" 
-                className="flex items-center space-x-2 bg-surface/50 hover:bg-surface/80 px-3 py-2 rounded-md transition-colors"
-              >
-                <FaMagic />
-                <span>Login</span>
-              </a>
-            )}
           </div>
         </div>
       </header>
@@ -657,9 +596,6 @@ export default function Home() {
       <footer className="border-t border-white/5 py-6">
         <div className="container mx-auto px-4 text-center text-text-secondary text-sm">
           <p>© 2025 3Dify - Text to 3D Model Converter</p>
-          <p className="mt-1">
-            Powered by Next.js, Three.js, and AI
-          </p>
         </div>
       </footer>
     </main>
