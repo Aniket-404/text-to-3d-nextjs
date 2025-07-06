@@ -60,3 +60,12 @@ python-api/temp/
 *.pt
 *.pth
 *.onnx
+
+# Service account credentials (never commit these)
+*service-account*.json
+vertex-ai-service-account.json
+
+# Additional model files
+*.h5
+*.hdf5
+*.pkl

@@ -18,11 +18,12 @@ import cloudinary
 import cloudinary.uploader
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from transformers import DPTImageProcessor, DPTForDepthEstimation
+from google.cloud import aiplatform
 import torch
 import open3d as o3d
 import google.generativeai as genai
 import matplotlib.pyplot as plt
+import json
 
 # Load environment variables
 load_dotenv()
@@ -41,18 +42,38 @@ cloudinary.config(
     api_secret=os.environ.get("CLOUDINARY_API_SECRET")
 )
 
-# Initialize the DPT model and processor with CUDA if available
-try:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    processor = DPTImageProcessor.from_pretrained("Intel/dpt-beit-large-512")
-    model = DPTForDepthEstimation.from_pretrained("Intel/dpt-beit-large-512").to(device)
-    if device.type == "cuda":
-        logger.info(f"Successfully initialized DPT model on GPU: {torch.cuda.get_device_name(0)}")
-    else:
-        logger.info("GPU not available, initialized DPT model on CPU")
-except Exception as e:
-    logger.error(f"Failed to initialize DPT model: {str(e)}")
-    raise
+# Initialize Vertex AI using environment variables or service account file
+def init_vertex_ai():
+    """Initialize Vertex AI with proper authentication"""
+    try:
+        # Check if service account credentials are in environment variable
+        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            # Use the file path from environment variable
+            aiplatform.init(project="text-to-3d-web", location="us-central1")
+            logger.info("Initialized Vertex AI with GOOGLE_APPLICATION_CREDENTIALS")
+        elif os.environ.get("VERTEX_AI_SERVICE_ACCOUNT"):
+            # Use service account JSON from environment variable
+            import tempfile
+            
+            # Create temporary file with service account credentials
+            service_account_info = json.loads(os.environ.get("VERTEX_AI_SERVICE_ACCOUNT"))
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(service_account_info, f)
+                temp_file = f.name
+            
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_file
+            aiplatform.init(project="text-to-3d-web", location="us-central1")
+            logger.info("Initialized Vertex AI with VERTEX_AI_SERVICE_ACCOUNT")
+        else:
+            # Fallback to default credentials
+            aiplatform.init(project="text-to-3d-web", location="us-central1")
+            logger.info("Initialized Vertex AI with default credentials")
+    except Exception as e:
+        logger.error(f"Failed to initialize Vertex AI: {str(e)}")
+        raise
+
+# Initialize Vertex AI
+init_vertex_ai()
 
 def download_image(image_url):
     """Download an image from a URL (optimized for Cloudinary URLs)"""
@@ -100,36 +121,27 @@ def download_image(image_url):
         raise
 
 def generate_depth_map(image):
-    """Generate a depth map from an image using DPT model"""
-    logger.info("Generating depth map using DPT")
-    
+    """Generate a depth map using Vertex AI endpoint."""
+    logger.info("Generating depth map using Vertex AI")
+
     try:
-        # Get the current device
-        device = next(model.parameters()).device
-        logger.info(f"Using device: {device}")
-        
-        # Prepare image for the model
-        inputs = processor(images=image, return_tensors="pt")
-        # Move inputs to the same device as the model
-        inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
-        
-        # Generate depth prediction
-        with torch.no_grad():
-            outputs = model(**inputs)
-            predicted_depth = outputs.predicted_depth
+        # Convert image to base64
+        buffered = BytesIO()
+        image.save(buffered, format="JPEG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-        # Interpolate to original size
-        prediction = torch.nn.functional.interpolate(
-            predicted_depth.unsqueeze(1),
-            size=image.size[::-1],
-            mode="bicubic",
-            align_corners=False,
-        )
+        # Prepare payload (adjust as per your deployed model's requirements)
+        instances = [{"image": {"b64": img_base64}}]
+        parameters = {}
 
-        # Convert to numpy array and normalize
-        output = prediction.squeeze().cpu().numpy()
-        formatted = (output * 255 / np.max(output)).astype("uint8")
-        depth = Image.fromarray(formatted)
+        # Note: Replace YOUR_ENDPOINT_ID with your actual Vertex AI endpoint ID
+        endpoint_id = os.environ.get("VERTEX_AI_ENDPOINT_ID", "YOUR_ENDPOINT_ID")
+        endpoint = aiplatform.Endpoint(f"projects/text-to-3d-web/locations/us-central1/endpoints/{endpoint_id}")
+        response = endpoint.predict(instances=instances, parameters=parameters)
+
+        # Parse response (adjust as per your model's output)
+        depth_array = np.array(response.predictions[0]["depth"])
+        depth_image = Image.fromarray((depth_array * 255).astype("uint8"))
         
         # Save a visualization of the depth map and upload to Cloudinary
         timestamp = int(time.time())
@@ -137,7 +149,7 @@ def generate_depth_map(image):
         
         try:
             plt.figure(figsize=(10, 10))
-            plt.imshow(depth, cmap='gray')
+            plt.imshow(depth_image, cmap='gray')
             plt.axis('off')
             plt.savefig(temp_path)
             plt.close()
@@ -155,7 +167,7 @@ def generate_depth_map(image):
             )
             logger.info(f"Uploaded depth map to Cloudinary: {depth_response['secure_url']}")
             # Store the URL in a property that can be accessed later
-            depth.cloudinary_url = depth_response['secure_url']
+            depth_image.cloudinary_url = depth_response['secure_url']
         except Exception as e:
             logger.warning(f"Could not save or upload depth visualization: {str(e)}")
         finally:
@@ -166,7 +178,7 @@ def generate_depth_map(image):
             except Exception as e:
                 logger.warning(f"Could not remove temporary depth map file: {str(e)}")
         
-        return depth
+        return depth_image
     except Exception as e:
         logger.error(f"Failed to generate depth map: {str(e)}")
         raise
