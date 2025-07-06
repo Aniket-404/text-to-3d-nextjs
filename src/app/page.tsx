@@ -367,7 +367,7 @@ export default function Home() {
           
           <div className="flex items-center space-x-4">
             <a 
-              href="#" 
+              href="/about" 
               className="text-text-secondary hover:text-primary transition-colors"
               title="About"
             >
