@@ -60,3 +60,8 @@ python-api/temp/
 *.pt
 *.pth
 *.onnx
+
+# Keep TensorFlow SavedModel but exclude large model files
+*.h5
+*.hdf5
+*.pkl
