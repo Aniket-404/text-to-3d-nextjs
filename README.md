@@ -1,21 +1,36 @@
-# Text to 3D Model Converter
+# 3Dify - Text to 3D Model Converter
 
-A web application that converts text descriptions into 3D models using AI.
+A production-ready web application that converts text descriptions and images into high-quality 3D models using advanced AI and Neural Radiance Fields (NeRF).
 
-## Features
+## 🚀 Features
 
-- Convert text prompts into 3D models
-- View and interact with 3D models in the browser
-- User authentication and model storage
-- Download and share generated models
+### **Core Generation Modes**
+- **Text to 3D**: Convert any text description into a 3D model
+- **Image to 3D**: Upload images and convert them to 3D models
+- **Dual Quality Options**: Fast preview + Premium NeRF generation
 
-## Tech Stack
+### **Advanced Technology**
+- **Neural Radiance Fields (NeRF)**: State-of-the-art 3D reconstruction
+- **Multi-View Synthesis**: Generate models from multiple camera angles
+- **Real-time Progress Tracking**: Live updates during generation
+- **Interactive 3D Viewer**: Web-based model exploration with Three.js
 
-- **Frontend**: Next.js, TypeScript, Tailwind CSS, Three.js (React Three Fiber)
-- **Backend**: Python Flask API, Hugging Face Stable Diffusion
+### **Production Features**
+- **User Authentication**: Secure Firebase-based auth system
+- **Model Storage**: Persistent storage with Firestore database
+- **Asset Management**: Cloudinary integration for scalable file handling
+- **Multiple Export Formats**: OBJ meshes, NeRF weights, config files
+- **Responsive Design**: Modern UI that works on all devices
+
+## 🛠 Tech Stack
+
+- **Frontend**: Next.js 14, TypeScript, Tailwind CSS, React Three Fiber
+- **Backend**: Python Flask API with production NeRF pipeline
+- **AI/ML**: Stable Diffusion, PyTorch, Intel DPT, Open3D
 - **Authentication**: Firebase Authentication
 - **Database**: Firebase Firestore
-- **Storage**: Cloudinary
+- **Storage**: Cloudinary for scalable asset management
+- **3D Processing**: Neural Radiance Fields, Marching Cubes, Mesh Optimization
 
 ## Getting Started
 

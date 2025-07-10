@@ -6,7 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "build:production": "NODE_ENV=production next build",
+    "start:production": "NODE_ENV=production next start",
+    "test:production": "npm run lint && npm run build:production",
+    "docker:build": "docker build -f Dockerfile.frontend -t 3dify-frontend:latest .",
+    "docker:build-api": "docker build -f Dockerfile.api -t 3dify-api:latest .",
+    "docker:up": "docker-compose -f docker-compose.production.yml up",
+    "docker:down": "docker-compose -f docker-compose.production.yml down",
+    "deploy:production": "chmod +x build-production.sh && ./build-production.sh",
+    "health:check": "curl -f http://localhost:3000/api/health || exit 1"
   },
   "dependencies": {
     "@react-three/drei": "^9.92.1",

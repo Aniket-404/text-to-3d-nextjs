@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # Frontend Service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://api:5000
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Backend API Service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_DEBUG=false
+    env_file:
+      - .env.production
+    volumes:
+      - model_cache:/app/model_cache
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - app-network
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+
+  # Optional: Redis for caching (uncomment if needed)
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+  #   networks:
+  #     - app-network
+
+  # Optional: Nginx Load Balancer (uncomment for production)
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf
+  #     - ./ssl:/etc/ssl
+  #   depends_on:
+  #     - frontend
+  #     - api
+  #   restart: unless-stopped
+  #   networks:
+  #     - app-network
+
+volumes:
+  model_cache:
+  # redis_data:
+
+networks:
+  app-network:
+    driver: bridge

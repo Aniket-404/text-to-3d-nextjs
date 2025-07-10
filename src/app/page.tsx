@@ -50,7 +50,7 @@ export default function Home() {
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Function to start progress tracking
-  const startProgressTracking = (jobId: string, isUpload: boolean = false) => {
+  const startProgressTracking = (jobId: string, isUpload: boolean = false, waitForCompletion: boolean = false) => {
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
     }
@@ -69,10 +69,39 @@ export default function Home() {
             setGenerationMessage(progressData.message || '');
           }
           
-          // Stop tracking if completed or failed
-          if (progressData.stage === 'completed' || progressData.stage === 'error') {
+          // Handle completion for premium mode
+          if (progressData.stage === 'completed') {
             clearInterval(progressIntervalRef.current!);
             progressIntervalRef.current = null;
+            
+            // If this is a premium NeRF job and has results, update the UI
+            if (waitForCompletion && progressData.result) {
+              const result = progressData.result;
+              setGeneratedUrls(prev => ({
+                ...prev,
+                image_url: result.image_url || prev.image_url,
+                nerf_weights_url: result.nerf_weights_url || null,
+                nerf_config_url: result.nerf_config_url || null,
+                nerf_mesh_url: result.nerf_mesh_url || null,
+                nerf_viewer_url: result.nerf_viewer_url || null,
+                model_url: result.nerf_mesh_url || result.model_url || prev.model_url
+              }));
+              
+              setPreviewReady(true);
+              setPremiumProcessing(false);
+              toast.success('Premium NeRF model ready! ✨');
+            }
+          }
+          
+          // Stop tracking if failed
+          if (progressData.stage === 'error') {
+            clearInterval(progressIntervalRef.current!);
+            progressIntervalRef.current = null;
+            
+            if (waitForCompletion) {
+              setPremiumProcessing(false);
+              toast.error('NeRF generation failed');
+            }
           }
         }
       } catch (error) {
@@ -292,89 +321,111 @@ export default function Home() {
     
     const generatePromise = new Promise(async (resolve, reject) => {
       try {
-        // Stage 1: Always generate fast preview first (5-10 seconds)
-        const fastResponse = await fetch('/api/python/generate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            prompt, 
-            depth_model: depthModel,
-            quality: 'preview'
-          }),
-          signal: abortController.signal,
-        });
-        
-        if (!fastResponse.ok) {
-          const errorData = await fastResponse.json();
-          throw new Error(errorData.error || 'Fast generation failed');
-        }
-        
-        const fastData = await fastResponse.json();
-        
-        // Store job ID for tracking
-        if (fastData.job_id) {
-          currentJobIdRef.current = fastData.job_id;
-          startProgressTracking(fastData.job_id, false);
-        }
-        
-        // Update with fast preview results
-        setGeneratedUrls(prev => ({
-          ...prev,
-          image_url: fastData.image_url,
-          depth_map_url: fastData.depth_map_url || null,
-          preview_mesh_url: fastData.model_url, // Fast mesh
-          model_url: fastData.model_url // Default to fast mesh
-        }));
-        
-        setPreviewReady(true);
-        toast.success('Preview ready! 🚀');
-
-        // Stage 2: If premium or both mode, start NeRF generation in background
-        if (generationMode === 'premium' || generationMode === 'both') {
+        // Different workflows based on generation mode
+        if (generationMode === 'premium') {
+          // Premium mode: Generate NeRF directly (no fast preview)
           setPremiumProcessing(true);
           
-          const premiumResponse = await fetch('/api/python/generate-nerf', {
+          const response = await fetch('/api/python/generate', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({ 
-              prompt,
-              image_url: fastData.image_url, // Use generated image as input
+              prompt, 
               depth_model: depthModel,
-              steps: 3000, // Optimized steps for speed/quality balance
-              resolution: 512 // Reasonable resolution
+              mode: 'premium'
             }),
             signal: abortController.signal,
           });
-
-          if (premiumResponse.ok) {
-            const premiumData = await premiumResponse.json();
-            
-            // Start progress tracking for NeRF
-            if (premiumData.job_id) {
-              currentJobIdRef.current = premiumData.job_id;
-              startProgressTracking(premiumData.job_id, false);
-            }
-            
-            // Update with premium results when ready
-            setGeneratedUrls(prev => ({
-              ...prev,
-              nerf_weights_url: premiumData.nerf_weights_url || null,
-              nerf_config_url: premiumData.nerf_config_url || null,
-              nerf_mesh_url: premiumData.nerf_mesh_url || null,
-              nerf_viewer_url: premiumData.nerf_viewer_url || null,
-              model_url: premiumData.nerf_mesh_url || prev.model_url // Use premium mesh if available
-            }));
-            
-            setPremiumProcessing(false);
-            toast.success('Premium NeRF model ready! ✨');
+          
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Premium generation failed');
           }
+          
+          const data = await response.json();
+          
+          // Store job ID for tracking
+          if (data.job_id) {
+            currentJobIdRef.current = data.job_id;
+            startProgressTracking(data.job_id, false, true); // Wait for completion
+          }
+          
+          resolve(data);
+          
+        } else {
+          // Fast mode OR Both mode: Generate fast preview first
+          const fastResponse = await fetch('/api/python/generate', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              prompt, 
+              depth_model: depthModel,
+              mode: 'fast'
+            }),
+            signal: abortController.signal,
+          });
+          
+          if (!fastResponse.ok) {
+            const errorData = await fastResponse.json();
+            throw new Error(errorData.error || 'Fast generation failed');
+          }
+          
+          const fastData = await fastResponse.json();
+          
+          // Store job ID for tracking
+          if (fastData.job_id) {
+            currentJobIdRef.current = fastData.job_id;
+            startProgressTracking(fastData.job_id, false);
+          }
+          
+          // Update with fast preview results
+          setGeneratedUrls(prev => ({
+            ...prev,
+            image_url: fastData.image_url,
+            depth_map_url: fastData.depth_map_url || null,
+            preview_mesh_url: fastData.model_url, // Fast mesh
+            model_url: fastData.model_url // Default to fast mesh
+          }));
+          
+          setPreviewReady(true);
+          toast.success('Preview ready! 🚀');
+          
+          // If "both" mode, start NeRF generation in background
+          if (generationMode === 'both') {
+            setPremiumProcessing(true);
+            
+            const premiumResponse = await fetch('/api/python/generate-nerf', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                prompt,
+                image_url: fastData.image_url, // Use generated image as input
+                depth_model: depthModel,
+                steps: 3000, // Optimized steps for speed/quality balance
+                resolution: 512 // Reasonable resolution
+              }),
+              signal: abortController.signal,
+            });
+
+            if (premiumResponse.ok) {
+              const premiumData = await premiumResponse.json();
+              
+              // Start progress tracking for NeRF
+              if (premiumData.job_id) {
+                currentJobIdRef.current = premiumData.job_id;
+                startProgressTracking(premiumData.job_id, false);
+              }
+            }
+          }
+          
+          resolve(fastData);
         }
-        
-        resolve(fastData);
       } catch (error: any) {
         // Don't show error if request was aborted
         if (error.name === 'AbortError') {
