@@ -12,6 +12,8 @@ from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from depth_map import process_image_to_3d, generate_image
+# Import NeRF functionality
+from nerf_trainer import NeRFTrainer, train_nerf_background
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +33,9 @@ cloudinary.config(
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# Initialize NeRF trainer
+nerf_trainer = NeRFTrainer()
 
 # Global dictionary to track active jobs and their cancellation status
 active_jobs = {}
@@ -350,6 +355,141 @@ def delete_file():
         return jsonify({"result": result})
     except Exception as e:
         return jsonify({"error": f"Failed to delete file: {str(e)}"}), 500
+
+@app.route('/nerf/generate', methods=['POST'])
+def generate_nerf():
+    """Generate NeRF model from text prompt"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'prompt' not in data:
+            return jsonify({"error": "Missing required field: prompt"}), 400
+        
+        prompt = data['prompt'].strip()
+        if not prompt:
+            return jsonify({"error": "Prompt cannot be empty"}), 400
+        
+        # Extract parameters
+        image_url = data.get('image_url')
+        depth_model = data.get('depth_model', 'intel')
+        steps = data.get('steps', 3000)
+        resolution = data.get('resolution', 512)
+        
+        # Validate parameters
+        if steps < 500 or steps > 10000:
+            return jsonify({"error": "Steps must be between 500 and 10000"}), 400
+        
+        if resolution not in [256, 512, 1024]:
+            return jsonify({"error": "Resolution must be 256, 512, or 1024"}), 400
+        
+        # Create job ID
+        job_id = create_job_id()
+        
+        logger.info(f"🧠 Starting NeRF generation job {job_id}")
+        logger.info(f"   Prompt: {prompt[:50]}...")
+        logger.info(f"   Steps: {steps}, Resolution: {resolution}")
+        logger.info(f"   Depth model: {depth_model}")
+        
+        # Initialize job tracking
+        with jobs_lock:
+            active_jobs[job_id] = {
+                'type': 'nerf_generation',
+                'status': 'started',
+                'cancelled': False,
+                'start_time': time.time()
+            }
+        
+        with progress_lock:
+            job_progress[job_id] = {
+                'progress': 0,
+                'message': 'Initializing NeRF training...',
+                'stage': 'started',
+                'result': None
+            }
+        
+        def progress_callback(progress, message, result=None):
+            """Update job progress"""
+            with progress_lock:
+                job_progress[job_id] = {
+                    'progress': progress,
+                    'message': message,
+                    'stage': 'completed' if progress == 100 else 'error' if progress == -1 else 'processing',
+                    'result': result
+                }
+            
+            # Update job status
+            with jobs_lock:
+                if job_id in active_jobs:
+                    if progress == 100:
+                        active_jobs[job_id]['status'] = 'completed'
+                    elif progress == -1:
+                        active_jobs[job_id]['status'] = 'error'
+        
+        # Start NeRF training in background
+        request_data = {
+            'prompt': prompt,
+            'image_url': image_url,
+            'steps': steps,
+            'resolution': resolution,
+            'depth_model': depth_model
+        }
+        
+        training_thread = threading.Thread(
+            target=train_nerf_background,
+            args=(nerf_trainer, request_data, job_id, progress_callback)
+        )
+        training_thread.daemon = True
+        training_thread.start()
+        
+        # Return job ID for progress tracking
+        return jsonify({
+            "job_id": job_id,
+            "status": "started",
+            "message": "NeRF training initiated. Use /progress/{job_id} to track progress.",
+            "estimated_time": f"{steps // 100} minutes"
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ NeRF generation error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/nerf/render/<job_id>', methods=['GET'])
+def render_nerf_view(job_id):
+    """Render specific view from trained NeRF"""
+    try:
+        # Check if job exists and is completed
+        with jobs_lock:
+            if job_id not in active_jobs:
+                return jsonify({"error": "Job not found"}), 404
+            
+            job_status = active_jobs[job_id]['status']
+            if job_status != 'completed':
+                return jsonify({"error": f"Job status: {job_status}. NeRF must be trained first."}), 400
+        
+        # Get view parameters
+        azimuth = request.args.get('azimuth', default=0, type=float)
+        elevation = request.args.get('elevation', default=0, type=float)
+        distance = request.args.get('distance', default=2.0, type=float)
+        
+        logger.info(f"🎬 Rendering NeRF view for job {job_id}")
+        logger.info(f"   Azimuth: {azimuth}°, Elevation: {elevation}°, Distance: {distance}")
+        
+        # In a real implementation, this would render the actual NeRF view
+        # For now, we'll return a placeholder response
+        timestamp = int(time.time())
+        rendered_view_url = f"https://res.cloudinary.com/your-cloud/image/upload/v1/3dify/nerf/renders/{job_id}_{timestamp}_az{azimuth}_el{elevation}.png"
+        
+        return jsonify({
+            "rendered_view_url": rendered_view_url,
+            "azimuth": azimuth,
+            "elevation": elevation,
+            "distance": distance,
+            "timestamp": timestamp
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ NeRF rendering error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 

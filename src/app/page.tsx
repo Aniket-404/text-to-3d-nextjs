@@ -14,10 +14,20 @@ export default function Home() {
     image_url: string | null;
     model_url: string | null;
     depth_map_url: string | null;
+    preview_mesh_url: string | null;    // Fast preview mesh
+    nerf_weights_url: string | null;    // NeRF model weights (.pth/.ckpt)
+    nerf_config_url: string | null;     // NeRF configuration (.json)
+    nerf_mesh_url: string | null;       // High-quality mesh from NeRF (.obj)
+    nerf_viewer_url: string | null;     // Interactive web viewer
   }>({
     image_url: null,
     model_url: null,
-    depth_map_url: null
+    depth_map_url: null,
+    preview_mesh_url: null,
+    nerf_weights_url: null,
+    nerf_config_url: null,
+    nerf_mesh_url: null,
+    nerf_viewer_url: null
   });
   const [generationStep, setGenerationStep] = useState(0);
   const [generationProgress, setGenerationProgress] = useState(0);
@@ -29,6 +39,9 @@ export default function Home() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadMessage, setUploadMessage] = useState('');
   const [depthModel, setDepthModel] = useState<'intel' | 'apple'>('intel');
+  const [generationMode, setGenerationMode] = useState<'fast' | 'premium' | 'both'>('fast');
+  const [previewReady, setPreviewReady] = useState(false);
+  const [premiumProcessing, setPremiumProcessing] = useState(false);
 
   // Refs to store abort controllers and job IDs for ongoing requests
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
@@ -111,7 +124,12 @@ export default function Home() {
     setGeneratedUrls({
       image_url: null,
       model_url: null,
-      depth_map_url: null
+      depth_map_url: null,
+      preview_mesh_url: null,
+      nerf_weights_url: null,
+      nerf_config_url: null,
+      nerf_mesh_url: null,
+      nerf_viewer_url: null
     });
   };
 
@@ -162,7 +180,12 @@ export default function Home() {
         setGeneratedUrls({
           image_url: data.image_url,
           model_url: data.model_url,
-          depth_map_url: data.depth_map_url || null
+          depth_map_url: data.depth_map_url || null,
+          preview_mesh_url: data.preview_mesh_url || null,
+          nerf_weights_url: data.nerf_weights_url || null,
+          nerf_config_url: data.nerf_config_url || null,
+          nerf_mesh_url: data.nerf_mesh_url || null,
+          nerf_viewer_url: data.nerf_viewer_url || null
         });
         
         // Clean up the local object URL and update with server URL
@@ -228,7 +251,12 @@ export default function Home() {
     setGeneratedUrls({
       image_url: null,
       model_url: null,
-      depth_map_url: null
+      depth_map_url: null,
+      preview_mesh_url: null,
+      nerf_weights_url: null,
+      nerf_config_url: null,
+      nerf_mesh_url: null,
+      nerf_viewer_url: null
     });
   };
 
@@ -249,43 +277,104 @@ export default function Home() {
     
     setIsGenerating(true);
     setGenerationStep(1);
+    setPreviewReady(false);
+    setPremiumProcessing(false);
     setGeneratedUrls({
       image_url: null,
       model_url: null,
-      depth_map_url: null
+      depth_map_url: null,
+      preview_mesh_url: null,
+      nerf_weights_url: null,
+      nerf_config_url: null,
+      nerf_mesh_url: null,
+      nerf_viewer_url: null
     });
     
     const generatePromise = new Promise(async (resolve, reject) => {
       try {
-        const response = await fetch('/api/python/generate', {
+        // Stage 1: Always generate fast preview first (5-10 seconds)
+        const fastResponse = await fetch('/api/python/generate', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ prompt, depth_model: depthModel }),
-          signal: abortController.signal, // Add abort signal
+          body: JSON.stringify({ 
+            prompt, 
+            depth_model: depthModel,
+            quality: 'preview'
+          }),
+          signal: abortController.signal,
         });
         
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Generation failed');
+        if (!fastResponse.ok) {
+          const errorData = await fastResponse.json();
+          throw new Error(errorData.error || 'Fast generation failed');
         }
         
-        const data = await response.json();
+        const fastData = await fastResponse.json();
         
-        // Store job ID for potential cancellation and start progress tracking
-        if (data.job_id) {
-          currentJobIdRef.current = data.job_id;
-          startProgressTracking(data.job_id, false);
+        // Store job ID for tracking
+        if (fastData.job_id) {
+          currentJobIdRef.current = fastData.job_id;
+          startProgressTracking(fastData.job_id, false);
         }
         
-        setGeneratedUrls({
-          image_url: data.image_url,
-          model_url: data.model_url,
-          depth_map_url: data.depth_map_url || null
-        });
+        // Update with fast preview results
+        setGeneratedUrls(prev => ({
+          ...prev,
+          image_url: fastData.image_url,
+          depth_map_url: fastData.depth_map_url || null,
+          preview_mesh_url: fastData.model_url, // Fast mesh
+          model_url: fastData.model_url // Default to fast mesh
+        }));
         
-        resolve(data);
+        setPreviewReady(true);
+        toast.success('Preview ready! 🚀');
+
+        // Stage 2: If premium or both mode, start NeRF generation in background
+        if (generationMode === 'premium' || generationMode === 'both') {
+          setPremiumProcessing(true);
+          
+          const premiumResponse = await fetch('/api/python/generate-nerf', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              prompt,
+              image_url: fastData.image_url, // Use generated image as input
+              depth_model: depthModel,
+              steps: 3000, // Optimized steps for speed/quality balance
+              resolution: 512 // Reasonable resolution
+            }),
+            signal: abortController.signal,
+          });
+
+          if (premiumResponse.ok) {
+            const premiumData = await premiumResponse.json();
+            
+            // Start progress tracking for NeRF
+            if (premiumData.job_id) {
+              currentJobIdRef.current = premiumData.job_id;
+              startProgressTracking(premiumData.job_id, false);
+            }
+            
+            // Update with premium results when ready
+            setGeneratedUrls(prev => ({
+              ...prev,
+              nerf_weights_url: premiumData.nerf_weights_url || null,
+              nerf_config_url: premiumData.nerf_config_url || null,
+              nerf_mesh_url: premiumData.nerf_mesh_url || null,
+              nerf_viewer_url: premiumData.nerf_viewer_url || null,
+              model_url: premiumData.nerf_mesh_url || prev.model_url // Use premium mesh if available
+            }));
+            
+            setPremiumProcessing(false);
+            toast.success('Premium NeRF model ready! ✨');
+          }
+        }
+        
+        resolve(fastData);
       } catch (error: any) {
         // Don't show error if request was aborted
         if (error.name === 'AbortError') {
@@ -304,11 +393,21 @@ export default function Home() {
       }
     });
     
+    const loadingMessage = generationMode === 'premium' 
+      ? 'Training NeRF model...' 
+      : generationMode === 'both'
+      ? 'Creating preview + NeRF...'
+      : 'Generating your image...';
+    
     toast.promise(generatePromise, {
-      loading: 'Generating your image...',
+      loading: loadingMessage,
       success: (data: any) => {
-        return data.source === 'fallback' 
+        return generationMode === 'premium' 
+          ? 'NeRF model training complete! 🎉'
+          : data.source === 'fallback' 
           ? 'Image created with fallback mode' 
+          : generationMode === 'both'
+          ? 'Preview ready, NeRF processing...'
           : 'Generation complete!';
       },
       error: (err) => {
@@ -334,7 +433,79 @@ export default function Home() {
       }
     } finally {
       setIsGenerating(false);
+      setPremiumProcessing(false);
       stopProgressTracking();
+    }
+  };
+
+  // Download all available files function
+  const downloadAll = async () => {
+    const downloads = [];
+    const timestamp = Date.now();
+    
+    // Collect all available downloads
+    if (generatedUrls.image_url) {
+      downloads.push({
+        url: generatedUrls.image_url,
+        filename: `3dify-image-${timestamp}.png`
+      });
+    }
+    
+    if (generatedUrls.depth_map_url) {
+      downloads.push({
+        url: generatedUrls.depth_map_url,
+        filename: `3dify-depth-${timestamp}.png`
+      });
+    }
+    
+    if (generatedUrls.preview_mesh_url) {
+      downloads.push({
+        url: generatedUrls.preview_mesh_url,
+        filename: `3dify-preview-mesh-${timestamp}.obj`
+      });
+    }
+    
+    if (generatedUrls.nerf_weights_url) {
+      downloads.push({
+        url: generatedUrls.nerf_weights_url,
+        filename: `3dify-nerf-weights-${timestamp}.pth`
+      });
+    }
+    
+    if (generatedUrls.nerf_mesh_url) {
+      downloads.push({
+        url: generatedUrls.nerf_mesh_url,
+        filename: `3dify-nerf-mesh-${timestamp}.obj`
+      });
+    }
+    
+    if (generatedUrls.nerf_config_url) {
+      downloads.push({
+        url: generatedUrls.nerf_config_url,
+        filename: `3dify-nerf-config-${timestamp}.json`
+      });
+    }
+    
+    // Download all files with delay between downloads
+    if (downloads.length > 0) {
+      toast.promise(
+        Promise.all(downloads.map(async (download, index) => {
+          // Add delay between downloads to avoid overwhelming the browser
+          await new Promise(resolve => setTimeout(resolve, index * 500));
+          
+          const link = document.createElement('a');
+          link.href = download.url;
+          link.download = download.filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        })),
+        {
+          loading: `Downloading ${downloads.length} files...`,
+          success: `Successfully downloaded ${downloads.length} files!`,
+          error: 'Failed to download some files'
+        }
+      );
     }
   };
 
@@ -421,6 +592,56 @@ export default function Home() {
                   ? 'Intel DPT BEIT Large 512 - Fast and reliable depth estimation'
                   : 'Apple DepthPro - High-quality depth estimation (currently using Intel DPT as fallback)'
                 }
+              </p>
+            </div>
+            
+            {/* Generation Quality Mode */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Quality Mode
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  onClick={() => setGenerationMode('fast')}
+                  disabled={isGenerating || isUploading}
+                  className={`p-3 rounded-lg border transition-colors text-sm ${
+                    generationMode === 'fast'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-white/10 bg-surface/30 hover:border-white/20'
+                  } ${(isGenerating || isUploading) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="font-medium">Fast</div>
+                  <div className="text-xs text-text-secondary">5-10s</div>
+                </button>
+                <button
+                  onClick={() => setGenerationMode('premium')}
+                  disabled={isGenerating || isUploading}
+                  className={`p-3 rounded-lg border transition-colors text-sm ${
+                    generationMode === 'premium'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-white/10 bg-surface/30 hover:border-white/20'
+                  } ${(isGenerating || isUploading) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="font-medium">Premium</div>
+                  <div className="text-xs text-text-secondary">2-5min</div>
+                </button>
+                <button
+                  onClick={() => setGenerationMode('both')}
+                  disabled={isGenerating || isUploading}
+                  className={`p-3 rounded-lg border transition-colors text-sm ${
+                    generationMode === 'both'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-white/10 bg-surface/30 hover:border-white/20'
+                  } ${(isGenerating || isUploading) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="font-medium">Both</div>
+                  <div className="text-xs text-text-secondary">Fast + NeRF</div>
+                </button>
+              </div>
+              <p className="text-xs text-text-secondary mt-2">
+                {generationMode === 'fast' && 'Fast depth-based mesh generation'}
+                {generationMode === 'premium' && 'High-quality NeRF with downloadable weights, config, and mesh'}
+                {generationMode === 'both' && 'Get fast preview + premium NeRF model (recommended)'}
               </p>
             </div>
             
@@ -615,37 +836,157 @@ export default function Home() {
                 </div>
               </div>
               
-              {/* Bottom Row: 3D Model Download */}
+              {/* Bottom Row: Enhanced Downloads */}
               <div className="flex justify-center">
-                <div className="w-full max-w-md">
-                  {generatedUrls.model_url ? (
-                    <div className="glass-panel p-6 text-center">
-                      <div className="inline-block p-4 rounded-full bg-primary/20 mb-4">
-                        <FaDownload className="text-3xl text-primary" />
-                      </div>
-                      <div className="mb-6">
-                        <span className="block text-lg font-semibold mb-2">3D Model Ready</span>
-                        <span className="text-sm text-text-secondary">OBJ format - Ready for download</span>
+                <div className="w-full max-w-md space-y-4">
+                  
+                  {/* Fast Preview Download */}
+                  {(generatedUrls.model_url || generatedUrls.preview_mesh_url) && (
+                    <div className="glass-panel p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <div className="font-medium text-sm">Standard 3D Mesh</div>
+                          <div className="text-xs text-text-secondary">OBJ format - Fast generation</div>
+                        </div>
+                        <div className="bg-green-500/20 text-green-400 px-2 py-1 rounded text-xs">
+                          Ready
+                        </div>
                       </div>
                       <a
-                        href={generatedUrls.model_url}
-                        download={`3dify-model-${Date.now()}.obj`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center justify-center space-x-2 bg-primary hover:bg-primary/90 text-black px-6 py-3 rounded-md transition-colors font-medium w-full"
+                        href={generatedUrls.model_url || generatedUrls.preview_mesh_url || ''}
+                        download={`3dify-mesh-${Date.now()}.obj`}
+                        className="flex items-center justify-center space-x-2 bg-surface hover:bg-surface/80 px-4 py-2 rounded-md transition-colors w-full text-sm"
                       >
                         <FaDownload />
-                        <span>Download 3D Model</span>
+                        <span>Download Mesh (.obj)</span>
                       </a>
                     </div>
-                  ) : (
+                  )}
+
+                  {/* Premium Processing Status */}
+                  {premiumProcessing && (
+                    <div className="glass-panel p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <div className="font-medium text-sm">Premium NeRF Model</div>
+                          <div className="text-xs text-text-secondary">High-quality neural radiance field</div>
+                        </div>
+                        <div className="bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded text-xs animate-pulse">
+                          Processing
+                        </div>
+                      </div>
+                      <div className="w-full bg-surface/30 h-2 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-primary transition-all duration-300"
+                          style={{ width: `${generationProgress}%` }}
+                        />
+                      </div>
+                      <div className="text-xs text-text-secondary mt-2">
+                        {generationMessage || 'Training neural radiance field...'}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* NeRF Model Downloads */}
+                  {(generatedUrls.nerf_weights_url || generatedUrls.nerf_mesh_url || generatedUrls.nerf_viewer_url) && (
+                    <div className="glass-panel p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <div className="font-medium text-sm">NeRF Model Package</div>
+                          <div className="text-xs text-text-secondary">Neural Radiance Field - Premium Quality</div>
+                        </div>
+                        <div className="bg-purple-500/20 text-purple-400 px-2 py-1 rounded text-xs">
+                          Premium ✨
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        {/* NeRF Weights Download */}
+                        {generatedUrls.nerf_weights_url && (
+                          <a
+                            href={generatedUrls.nerf_weights_url}
+                            download={`3dify-nerf-weights-${Date.now()}.pth`}
+                            className="flex items-center justify-center space-x-2 bg-primary hover:bg-primary/90 text-black px-4 py-2 rounded-md transition-colors w-full text-sm font-medium"
+                          >
+                            <FaDownload />
+                            <span>Download NeRF Weights (.pth)</span>
+                          </a>
+                        )}
+                        
+                        {/* High-Quality Mesh from NeRF */}
+                        {generatedUrls.nerf_mesh_url && (
+                          <a
+                            href={generatedUrls.nerf_mesh_url}
+                            download={`3dify-nerf-mesh-${Date.now()}.obj`}
+                            className="flex items-center justify-center space-x-2 bg-surface hover:bg-surface/80 px-4 py-2 rounded-md transition-colors w-full text-sm"
+                          >
+                            <FaDownload />
+                            <span>Download Premium Mesh (.obj)</span>
+                          </a>
+                        )}
+                        
+                        {/* NeRF Configuration */}
+                        {generatedUrls.nerf_config_url && (
+                          <a
+                            href={generatedUrls.nerf_config_url}
+                            download={`3dify-nerf-config-${Date.now()}.json`}
+                            className="flex items-center justify-center space-x-2 bg-surface/50 hover:bg-surface/70 px-4 py-2 rounded-md transition-colors w-full text-sm"
+                          >
+                            <FaDownload />
+                            <span>Download Config (.json)</span>
+                          </a>
+                        )}
+                        
+                        {/* Interactive Viewer */}
+                        {generatedUrls.nerf_viewer_url && (
+                          <a
+                            href={generatedUrls.nerf_viewer_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-md transition-colors w-full text-sm"
+                          >
+                            <span>🎮</span>
+                            <span>Open Interactive Viewer</span>
+                          </a>
+                        )}
+                      </div>
+                      
+                      {/* NeRF Info */}
+                      <div className="mt-3 p-2 bg-surface/30 rounded text-xs text-text-secondary">
+                        💡 NeRF weights can be loaded in Blender, Unity, or custom viewers
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Download All Button */}
+                  {(generatedUrls.model_url || generatedUrls.preview_mesh_url || generatedUrls.nerf_weights_url) && (
+                    <button
+                      onClick={downloadAll}
+                      className="w-full flex items-center justify-center space-x-2 bg-gradient-to-r from-primary to-blue-500 hover:from-primary/90 hover:to-blue-600 text-black px-4 py-3 rounded-md transition-colors font-medium"
+                    >
+                      <FaDownload />
+                      <span>Download All Files</span>
+                    </button>
+                  )}
+
+                  {/* Fallback - No Models */}
+                  {!generatedUrls.model_url && !generatedUrls.preview_mesh_url && !generatedUrls.nerf_weights_url && (
                     <div className="glass-panel p-6 text-center">
                       {(isGenerating || isUploading) ? (
                         <div className="text-center">
                           <div className="inline-block p-3 rounded-full bg-surface/30 mb-4">
                             <FaMagic className="text-3xl animate-spin text-primary" />
                           </div>
-                          <p>Creating 3D model...</p>
+                          <p>
+                            {generationMode === 'premium' ? 'Training NeRF model...' :
+                             generationMode === 'both' ? 'Creating models...' :
+                             mode === 'text' ? 'Creating 3D model...' : 'Processing your image...'}
+                          </p>
+                          {premiumProcessing && (
+                            <p className="text-sm text-text-secondary mt-2">
+                              Preview ready, NeRF training in progress...
+                            </p>
+                          )}
                         </div>
                       ) : (
                         <div className="text-center">

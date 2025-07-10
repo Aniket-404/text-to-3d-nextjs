@@ -24,3 +24,9 @@ protobuf>=3.20.3,<5.0.0dev
 # xformers disabled for CPU-only operation
 filelock==3.13.1
 tqdm==4.66.2
+# NeRF and 3D processing dependencies
+scipy==1.11.3
+trimesh==4.0.5
+scikit-image==0.22.0
+opencv-python==4.8.1.78
+imageio==2.33.0
