@@ -45,6 +45,16 @@ cloudinary.config(
 try:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    # Check GPU memory for optimization
+    if device.type == "cuda":
+        total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+        logger.info(f"GPU total memory: {total_memory:.1f}GB")
+        
+        # For low memory GPUs (< 6GB), use CPU for depth models to save VRAM for main generation
+        if total_memory < 6:
+            logger.warning(f"Low GPU memory detected ({total_memory:.1f}GB). Using CPU for depth models to preserve VRAM.")
+            device = torch.device("cpu")
+    
     # Initialize Intel DPT model
     intel_processor = DPTImageProcessor.from_pretrained("Intel/dpt-beit-large-512")
     intel_model = DPTForDepthEstimation.from_pretrained("Intel/dpt-beit-large-512").to(device)
@@ -60,7 +70,7 @@ try:
     if device.type == "cuda":
         logger.info(f"Successfully initialized depth models on GPU: {torch.cuda.get_device_name(0)}")
     else:
-        logger.info("GPU not available, initialized depth models on CPU")
+        logger.info("GPU not available or optimized for memory, initialized depth models on CPU")
 except Exception as e:
     logger.error(f"Failed to initialize depth models: {str(e)}")
     raise
@@ -119,7 +129,16 @@ def generate_depth_map(image, job_id=None, depth_model='intel'):
                 pass
         return False
     
+    # Memory management function
+    def clear_memory():
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    
     try:
+        # Clear memory before starting
+        clear_memory()
+        
         # Check for cancellation at the start
         if check_cancellation():
             raise Exception("Job was cancelled during depth map generation")
@@ -138,9 +157,35 @@ def generate_depth_map(image, job_id=None, depth_model='intel'):
         device = next(current_model.parameters()).device
         logger.info(f"Using device: {device}")
         
+        # Check GPU memory if using CUDA
+        if device.type == 'cuda':
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            free_memory = total - reserved
+            
+            logger.info(f"GPU Memory - Free: {free_memory:.1f}GB / Total: {total:.1f}GB")
+            
+            # If low on memory, try to move model to CPU
+            if free_memory < 1.0:  # Less than 1GB free
+                logger.warning("Low GPU memory detected, moving model to CPU")
+                current_model = current_model.cpu()
+                device = torch.device('cpu')
+                clear_memory()
+        
         # Check for cancellation before preprocessing
         if check_cancellation():
             raise Exception("Job was cancelled during depth map generation")
+        
+        # Resize image if too large to save memory
+        original_size = image.size
+        max_size = 1024 if device.type == 'cuda' else 512
+        
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = tuple(int(dim * ratio) for dim in image.size)
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            logger.info(f"Resized image from {original_size} to {image.size} to save memory")
         
         # Prepare image for the model
         inputs = current_processor(images=image, return_tensors="pt")
@@ -151,9 +196,24 @@ def generate_depth_map(image, job_id=None, depth_model='intel'):
         if check_cancellation():
             raise Exception("Job was cancelled during depth map generation")
         
-        # Generate depth prediction
+        # Generate depth prediction with memory management
         with torch.no_grad():
-            outputs = current_model(**inputs)
+            try:
+                outputs = current_model(**inputs)
+                predicted_depth = outputs.predicted_depth
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    logger.warning("GPU OOM during inference, moving to CPU")
+                    # Move model and inputs to CPU
+                    current_model = current_model.cpu()
+                    inputs = {k: v.cpu() if hasattr(v, 'cpu') else v for k, v in inputs.items()}
+                    clear_memory()
+                    
+                    # Retry on CPU
+                    outputs = current_model(**inputs)
+                    predicted_depth = outputs.predicted_depth
+                else:
+                    raise
             predicted_depth = outputs.predicted_depth
 
         # Check for cancellation before post-processing
@@ -212,9 +272,14 @@ def generate_depth_map(image, job_id=None, depth_model='intel'):
             except Exception as e:
                 logger.warning(f"Could not remove temporary depth map file: {str(e)}")
         
+        # Clean up GPU memory
+        clear_memory()
+        
         return depth
     except Exception as e:
         logger.error(f"Failed to generate depth map: {str(e)}")
+        # Clean up GPU memory on error
+        clear_memory()
         raise
 
 def create_point_cloud(image, depth_map, fx=1000, fy=1000, job_id=None):
@@ -546,7 +611,7 @@ def generate_image_with_gemini(prompt):
         logger.error(f"Error generating image with Gemini: {str(e)}")
         return None
 
-def generate_image_with_huggingface(prompt):
+def generate_image_with_huggingface(prompt, negative_prompt='low quality, bad anatomy, worst quality, low resolution, blurry'):
     """Generate an image using Hugging Face API"""
     logger.info(f"Generating image with Hugging Face API for prompt: {prompt}")
     
@@ -573,7 +638,7 @@ def generate_image_with_huggingface(prompt):
         image = client.text_to_image(
             prompt=prompt,
             model=model_id,
-            negative_prompt="low quality, bad anatomy, worst quality, low resolution, blurry",
+            negative_prompt=negative_prompt,
             num_inference_steps=30,  # More steps for better quality
             guidance_scale=7.5,
             width=1024,  # Higher resolution
@@ -632,7 +697,7 @@ def generate_image_with_github(prompt):
         logger.error(f"Error generating image with GitHub OpenAI proxy: {str(e)}")
         return None
 
-def generate_image(prompt, use_huggingface=True, use_github=False):
+def generate_image(prompt, use_huggingface=True, use_github=False, negative_prompt='low quality, bad anatomy, worst quality, low resolution, blurry'):
     """Generate an image using available APIs, optionally using GitHub proxy"""
     logger.info(f"Generating image for prompt: {prompt}")
     if use_github:
@@ -644,7 +709,7 @@ def generate_image(prompt, use_huggingface=True, use_github=False):
             logger.warning("GitHub OpenAI proxy image generation failed, trying Hugging Face/Gemini")
     if use_huggingface:
         # Try Hugging Face first (as requested)
-        image = generate_image_with_huggingface(prompt)
+        image = generate_image_with_huggingface(prompt, negative_prompt)
         if image:
             logger.info("Successfully generated image with Hugging Face API")
             return image
@@ -668,7 +733,7 @@ def generate_image(prompt, use_huggingface=True, use_github=False):
     logger.error("All image generation methods failed")
     return None
 
-def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=None, depth_model='intel'):
+def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=None, depth_model='intel', negative_prompt='low quality, bad anatomy, worst quality, low resolution, blurry'):
     """Process an image to create a 3D model
     
     Args:
@@ -723,7 +788,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
             if check_cancellation():
                 return {"error": "Job was cancelled", "success": False, "cancelled": True}
             
-            image = generate_image(prompt, use_huggingface=use_huggingface)
+            image = generate_image(prompt, use_huggingface=use_huggingface, negative_prompt=negative_prompt)
             if not image:
                 logger.warning("Hugging Face/Gemini image generation failed, trying GitHub OpenAI proxy...")
                 update_progress('generating_image', 15, 'Retrying image generation with fallback...')
@@ -732,7 +797,7 @@ def process_image_to_3d(image_url, prompt=None, use_huggingface=True, job_id=Non
                 if check_cancellation():
                     return {"error": "Job was cancelled", "success": False, "cancelled": True}
                 
-                image = generate_image(prompt, use_huggingface=False, use_github=True)
+                image = generate_image(prompt, use_huggingface=False, use_github=True, negative_prompt=negative_prompt)
             if not image:
                 logger.error("Image generation failed")
                 return {"error": "Failed to generate image", "success": False}
