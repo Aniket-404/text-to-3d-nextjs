@@ -52,6 +52,8 @@ venv/
 
 # Model cache and large files
 python-api/model_cache/
+python-api/nerf_cache/
+python-api/sparse_cache/
 python-api/models/
 python-api/temp/
 *.ckpt
