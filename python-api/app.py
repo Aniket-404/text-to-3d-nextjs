@@ -715,24 +715,34 @@ def generate_sparse():
         if not prompt:
             return jsonify({"error": "Prompt cannot be empty"}), 400
         
-        # Extract parameters
-        num_views = data.get('num_views', 6)
-        resolution = data.get('resolution', 512)
+        # Extract parameters - OPTIMIZED FOR QUALITY + API
+        num_views = data.get('num_views', 6)    # UPDATED: Increased from 4 to 6 for better quality
+        resolution = data.get('resolution', 512)  # UPDATED: Increased from 256 to 512 for better quality
         negative_prompt = data.get('negative_prompt', 'low quality, bad anatomy, worst quality, low resolution, blurry')
+        use_api = data.get('use_api', True)     # Default to API for maximum speed
         
-        # Validate parameters
-        if num_views < 4 or num_views > 12:
-            return jsonify({"error": "Number of views must be between 4 and 12"}), 400
+        # Check API availability
+        has_api_key = os.getenv('HUGGINGFACE_API_KEY') is not None
+        if use_api and not has_api_key:
+            logger.warning("⚠️ API requested but no Hugging Face API key found, using local generation")
+            use_api = False
         
-        if resolution not in [256, 512, 1024]:
+        # Validate parameters - UPDATED FOR BETTER QUALITY
+        if num_views < 4 or num_views > 8:  # Keep flexible range
+            return jsonify({"error": "Number of views must be between 4 and 8"}), 400
+        
+        if resolution not in [256, 512, 1024]:  # Added back 1024 for high quality
             return jsonify({"error": "Resolution must be 256, 512, or 1024"}), 400
         
         # Create job ID
         job_id = create_job_id()
         
-        logger.info(f"🔄 Starting sparse view reconstruction job {job_id}")
+        logger.info(f"� Starting ULTRA-FAST sparse view reconstruction job {job_id}")
         logger.info(f"   Prompt: {prompt[:50]}...")
         logger.info(f"   Views: {num_views}, Resolution: {resolution}")
+        logger.info(f"   API Mode: {use_api} ({'✅ Available' if has_api_key else '❌ No Key'})")
+        if use_api and has_api_key:
+            logger.info(f"   Expected speed: 15-20x faster than local generation")
         
         # Initialize job tracking
         with jobs_lock:

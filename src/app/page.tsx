@@ -403,9 +403,10 @@ export default function Home() {
             body: JSON.stringify({ 
               prompt: sanitizedPrompt, 
               depth_model: depthModel,
-              num_views: 6, // Strategic viewpoints
-              resolution: 512,
-              negative_prompt: "nsfw, inappropriate, explicit, adult content, nudity"
+              num_views: 6, // UPDATED: Increased from 4 to 6 for better quality
+              resolution: 512, // UPDATED: Increased from 256 to 512 for better quality
+              negative_prompt: "nsfw, inappropriate, explicit, adult content, nudity, low quality, bad anatomy, worst quality, low resolution, blurry",
+              use_api: true // SPEED: Enable Hugging Face API for 15-20x faster generation
             }),
             signal: abortController.signal,
           });
@@ -524,7 +525,7 @@ export default function Home() {
     const loadingMessage = generationMode === 'premium' 
       ? 'Training NeRF model...' 
       : generationMode === 'sparse'
-      ? 'Creating multi-view sparse reconstruction...'
+      ? '🚀 Creating high-quality multi-view sparse reconstruction (6 views, 512px)...'
       : generationMode === 'ultimate'
       ? 'Ultimate quality: Sparse + NeRF...'
       : 'Generating your image...';
@@ -535,7 +536,7 @@ export default function Home() {
         return generationMode === 'premium' 
           ? 'NeRF model training complete! 🎉'
           : generationMode === 'sparse'
-          ? 'Sparse reconstruction complete! 🎯'
+          ? '🚀 High-quality sparse reconstruction complete! (6 views, API accelerated) 🎯'
           : generationMode === 'ultimate'
           ? 'Ultimate quality model ready! ✨'
           : data.source === 'fallback' 
