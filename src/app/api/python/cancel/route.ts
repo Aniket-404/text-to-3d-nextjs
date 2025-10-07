@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     }
     
     // Get the API URL from environment variables
-    const pythonApiUrl = process.env.PYTHON_API_URL || 'http://localhost:5000';
+    const pythonApiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
     
     console.log(`Cancelling job: ${job_id}`);
     

@@ -15,7 +15,7 @@ export async function GET(
     }
 
     // Get the Python API URL from environment variables
-    const pythonApiUrl = process.env.PYTHON_API_URL || 'http://localhost:5000';
+    const pythonApiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
     
     // Forward the request to the Python API
     const response = await fetch(`${pythonApiUrl}/progress/${jobId}`, {

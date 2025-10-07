@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
     let jobId: string | null = null;
 
     // Forward the request to the Python API
-    const pythonApiUrl = process.env.PYTHON_API_URL || 'http://localhost:5000';
+    const pythonApiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
     
     try {
       const response = await fetch(`${pythonApiUrl}/upload`, {
