@@ -44,15 +44,29 @@ cloudinary.config(
 # Initialize the DPT model and processor with CUDA if available
 try:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    processor = DPTImageProcessor.from_pretrained("black-forest-labs/FLUX.1-schnell")
-    model = DPTForDepthEstimation.from_pretrained("black-forest-labs/FLUX.1-schnell").to(device)
+    
+    # Use Intel's DPT model for depth estimation (not FLUX which is for text-to-image)
+    model_name = "Intel/dpt-beit-large-512"  # High quality depth model
+    
+    processor = DPTImageProcessor.from_pretrained(model_name)
+    model = DPTForDepthEstimation.from_pretrained(model_name).to(device)
+    
     if device.type == "cuda":
-        logger.info(f"Successfully initialized DPT model on GPU: {torch.cuda.get_device_name(0)}")
+        logger.info(f"Successfully initialized DPT model '{model_name}' on GPU: {torch.cuda.get_device_name(0)}")
     else:
-        logger.info("GPU not available, initialized DPT model on CPU")
+        logger.info(f"GPU not available, initialized DPT model '{model_name}' on CPU")
 except Exception as e:
     logger.error(f"Failed to initialize DPT model: {str(e)}")
-    raise
+    # Try fallback to smaller/faster model if the large one fails
+    try:
+        model_name = "Intel/dpt-swinv2-tiny-256"
+        logger.info(f"Trying fallback model: {model_name}")
+        processor = DPTImageProcessor.from_pretrained(model_name)
+        model = DPTForDepthEstimation.from_pretrained(model_name).to(device)
+        logger.info(f"Successfully initialized fallback DPT model '{model_name}'")
+    except Exception as fallback_e:
+        logger.error(f"Failed to initialize fallback DPT model: {str(fallback_e)}")
+        raise
 
 def download_image(image_url):
     """Download an image from a URL (optimized for Cloudinary URLs)"""
